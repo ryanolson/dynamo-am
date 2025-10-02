@@ -233,6 +233,9 @@ impl ZmqActiveMessageManager {
 
         manager.register_builtin_handlers().await?;
 
+        // Initialize peer cache before starting message processing
+        manager.message_router.initialize_peer_cache().await;
+
         // Spawn transport reader tasks for both TCP and IPC
         let _tcp_reader_task = tokio::spawn(Self::transport_reader_task(
             tcp_transport,
