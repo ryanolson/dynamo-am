@@ -15,9 +15,10 @@ use uuid::Uuid;
 use crate::receipt_ack::ClientExpectation;
 
 /// Delivery semantics requested by the sender.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryMode {
+    #[default]
     FireAndForget,
     Confirmed,
     WithResponse,
@@ -49,6 +50,7 @@ impl DeliveryMode {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(value: &str) -> Option<Self> {
         match value {
             "fire_and_forget" => Some(DeliveryMode::FireAndForget),
@@ -58,12 +60,6 @@ impl DeliveryMode {
             "with_receipt_and_response" => Some(DeliveryMode::WithReceiptAndResponse),
             _ => None,
         }
-    }
-}
-
-impl Default for DeliveryMode {
-    fn default() -> Self {
-        DeliveryMode::FireAndForget
     }
 }
 

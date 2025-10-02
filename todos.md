@@ -2,33 +2,6 @@
 
 ## Phase 1: Quick Wins (No Breaking Changes)
 
-### 1. Remove Metrics Serialization Overhead
-**Status:** TODO
-**Branch:** `ryan/perf-metrics-overhead`
-**Priority:** P1 - High (wasteful CPU usage)
-
-**Problem:**
-```rust
-// dispatcher.rs:490-492
-let control_size = serde_json::to_vec(&message.control)
-    .map(|b| b.len())
-    .unwrap_or(0);
-```
-Serializes ControlMetadata just to measure byte size for metrics.
-
-**Solution:**
-- Option A: Estimate size from struct fields
-- Option B: Cache serialized size on ControlMetadata
-- Option C: Skip size tracking entirely (simplest)
-
-**Files to Change:**
-- [ ] `lib/am/src/runtime/dispatcher.rs` - Remove or optimize size calculation
-- [ ] Consider adding size estimation method to ControlMetadata if needed
-
-**Impact:** Server-side only, safe to change
-
----
-
 ### 3. Optimize Bytes Usage (Zero-Copy)
 **Status:** TODO
 **Branch:** `ryan/perf-zero-copy-bytes`
@@ -91,8 +64,8 @@ For each optimization:
 ## Current Status
 
 - [x] Phase 1.1: Response Type Discrimination (COMPLETED - [PR #2](https://github.com/ryanolson/dynamo-am/pull/2))
-- [ ] Phase 1.2: Metrics Overhead
+- [x] Phase 1.2: Metrics Overhead (COMPLETED - branch `ryan/perf-metrics-overhead`)
 - [ ] Phase 1.3: Zero-Copy Bytes
 - [ ] Phase 1.4: Auto-Registration Cache
 
-**Next:** Phase 1.2 - Remove Metrics Serialization Overhead
+**Next:** Phase 1.3 - Optimize Bytes Usage (Zero-Copy)
