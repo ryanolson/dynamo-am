@@ -364,16 +364,29 @@ let control_size = serde_json::to_vec(&message.control).unwrap_or(0);
 
 ### 🟡 Priority 4: Memory Optimizations
 
-#### Issue 4.1: Bytes Copying
+#### Issue 4.1: Bytes Copying at ZMQ Boundary
 **Locations:** Multiple
 
 **Current:** `Bytes::from(vec)` copies data
-- `thin_transport.rs:169`
-- `transport.rs:182`
+- `thin_transport.rs:169` - `Message::from(message.payload.as_ref())` copies to ZMQ buffer
+- `transport.rs:182` - `Bytes::from(multipart[1].to_vec())` copies from ZMQ buffer
 
-**Solution:** Use `Bytes::clone()` (reference counted)
+**Analysis (Phase 1.3 Investigation):**
+Zero-copy optimization is **not feasible** due to fundamental ZMQ boundary constraints:
 
-**Impact:** Zero-copy optimization
+1. **Sending Path:** `tmq::Message::from(&[u8])` always copies into ZMQ-owned buffer
+   - `Bytes` uses reference-counted shared memory
+   - ZMQ requires its own managed buffer for wire transmission
+   - No shared ownership mechanism between Bytes and ZMQ Message
+
+2. **Receiving Path:** `tmq::Message` → `Bytes` conversion requires copy
+   - ZMQ owns the receive buffer
+   - Cannot convert ZMQ buffer to Bytes without copying (incompatible memory management)
+   - `Message::to_vec()` is the only extraction method
+
+**Conclusion:** Copies at transport boundary are unavoidable. Phase 1.3 (Zero-Copy Bytes) marked as NOT PURSUED.
+
+**Alternative:** Audit for unnecessary `Bytes` copies *within* application logic (not at ZMQ boundary).
 
 #### Issue 4.2: Unbounded Channel Growth
 **Location:** `manager.rs:171`
@@ -391,10 +404,10 @@ let control_size = serde_json::to_vec(&message.control).unwrap_or(0);
 ## Optimization Roadmap
 
 ### Phase 1: Quick Wins (No Protocol Changes)
-1. ✅ Remove metrics serialization overhead
-2. ✅ Use Bytes::clone() instead of copies
-3. ✅ Optimize auto-registration checks (cache peer list)
-4. ✅ Inline handler execution for simple cases
+1. ✅ **Phase 1.1:** Response Type Discrimination (COMPLETED - PR #2)
+2. ✅ **Phase 1.2:** Remove metrics serialization overhead (COMPLETED)
+3. ❌ **Phase 1.3:** Zero-Copy Bytes (NOT PURSUED - ZMQ boundary constraints)
+4. 🔄 **Phase 1.4:** Optimize auto-registration checks (IN PROGRESS)
 
 **Estimated Impact:** 10-15% latency reduction
 

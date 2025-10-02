@@ -2,28 +2,6 @@
 
 ## Phase 1: Quick Wins (No Breaking Changes)
 
-### 3. Optimize Bytes Usage (Zero-Copy)
-**Status:** TODO
-**Branch:** `ryan/perf-zero-copy-bytes`
-**Priority:** P2 - Medium (memory efficiency)
-
-**Problem:**
-Multiple places copy bytes instead of using reference-counted clones:
-- `thin_transport.rs:169` - `Message::from(message.payload.as_ref())`
-- `transport.rs:182` - `Bytes::from(multipart[1].to_vec())`
-
-**Solution:**
-Use `Bytes::clone()` which is cheap (just increments refcount) instead of copying data.
-
-**Files to Change:**
-- [ ] `lib/am/src/zmq/thin_transport.rs` - Use Bytes::clone()
-- [ ] `lib/am/src/zmq/transport.rs` - Avoid vec copy where possible
-- [ ] Audit other locations for unnecessary Bytes copies
-
-**Impact:** Client and server (reduces memory allocations)
-
----
-
 ### 4. Optimize Auto-Registration Checks
 **Status:** TODO
 **Branch:** `ryan/perf-auto-registration`
@@ -65,7 +43,7 @@ For each optimization:
 
 - [x] Phase 1.1: Response Type Discrimination (COMPLETED - [PR #2](https://github.com/ryanolson/dynamo-am/pull/2))
 - [x] Phase 1.2: Metrics Overhead (COMPLETED - branch `ryan/perf-metrics-overhead`)
-- [ ] Phase 1.3: Zero-Copy Bytes
+- [x] Phase 1.3: Zero-Copy Bytes (SKIPPED - Not feasible due to ZMQ boundary constraints, see docs/perf_optimizations.md)
 - [ ] Phase 1.4: Auto-Registration Cache
 
-**Next:** Phase 1.3 - Optimize Bytes Usage (Zero-Copy)
+**Next:** Phase 1.4 - Optimize Auto-Registration Checks
