@@ -199,7 +199,7 @@ impl ThinTransport for ZmqThinTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocols::ControlMetadata;
+    use crate::ControlMetadata;
     use bytes::Bytes;
     use uuid::Uuid;
 

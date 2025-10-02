@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// #![doc = include_str!("../docs/active_message.md")]
+#![doc = include_str!("../docs/active_message.md")]
 
 pub mod api;
 pub mod protocols;
@@ -13,7 +13,12 @@ pub mod zmq;
 pub use api::{
     builder::MessageBuilder,
     client::{ActiveMessageClient, PeerInfo, WorkerAddress},
+    control::{
+        AcceptanceMetadata, AckMetadata, ControlMetadata, DeliveryMode, ReceiptMetadata,
+        ResponseContextMetadata, ResponseMetadata, TransportHints,
+    },
     handler::{ActiveMessageContext, HandlerEvent, InstanceId},
+    message::ActiveMessage,
     status::{DetachedConfirm, MessageStatus, SendAndConfirm, WithResponse},
 };
 
@@ -24,13 +29,6 @@ pub use protocols::{
         DiscoverResponse, HealthCheckResponse, JoinCohortResponse, ListHandlersResponse,
         RegisterServiceResponse, RemoveServiceResponse, RequestShutdownResponse,
         WaitForHandlerResponse,
-    },
-    v2::{
-        control::{
-            AcceptanceMetadata, AckMetadata, ControlMetadata, DeliveryMode, ReceiptMetadata,
-            ResponseContextMetadata, ResponseMetadata, TransportHints,
-        },
-        message::ActiveMessage,
     },
 };
 
