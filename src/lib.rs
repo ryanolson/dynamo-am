@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#![doc = include_str!("../docs/active_message.md")]
+#![cfg_attr(not(doctest), doc = include_str!("../docs/active_message.md"))]
 
 pub mod api;
 pub mod protocols;
