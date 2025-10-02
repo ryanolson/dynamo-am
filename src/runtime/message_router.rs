@@ -186,55 +186,15 @@ impl MessageRouter {
         }
 
         // ============================================================================
-        // LEGACY PATH: JSON payload parsing for backward compatibility (OLD PROTOCOL)
+        // BREAKING CHANGE: response_type is now REQUIRED
         // ============================================================================
-        // This path is taken when `response_type` is not present in metadata.
-        // It maintains compatibility with old clients/servers that don't set the field.
-        // Performance: Requires JSON parsing to check for "status" field in payload.
-        debug!("No response_type in metadata, falling back to JSON parsing");
-        if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&message.payload) {
-            debug!("Parsed response as JSON: {:?}", json_value);
-            if let Some(status) = json_value.get("status").and_then(|s| s.as_str()) {
-                debug!("Found status field: {}", status);
-                match status {
-                    "ok" => {
-                        // This is an ACK
-                        debug!("Completing as ACK");
-                        self.response_manager.complete_ack(response_id, Ok(()));
-                        return Ok(());
-                    }
-                    "error" => {
-                        // This is a NACK
-                        let error_msg = json_value
-                            .get("message")
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("Unknown error")
-                            .to_string();
-                        debug!("Completing as NACK: {}", error_msg);
-                        self.response_manager
-                            .complete_ack(response_id, Err(error_msg));
-                        return Ok(());
-                    }
-                    _ => {
-                        // Not an ACK/NACK status, treat as full response
-                        debug!("Unknown status value, treating as full response");
-                    }
-                }
-            } else {
-                debug!("No status field found, treating as full response");
-            }
-        } else {
-            debug!("Could not parse as JSON, treating as full response");
-        }
-
-        // This is a full response message
-        debug!(
-            "Completing as full response with {} bytes",
-            message.payload.len()
+        // If we reach here, the sender didn't include response_type metadata.
+        // This is a protocol violation in the optimized version.
+        error!(
+            "Response message {} missing required response_type metadata from {}",
+            response_id, message.sender_instance
         );
-        self.response_manager
-            .complete_response(response_id, message.payload);
-        Ok(())
+        anyhow::bail!("Response message missing response_type metadata (protocol version mismatch)")
     }
 
     /// Convert ActiveMessage to DispatchMessage for the v2 dispatcher
