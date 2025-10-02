@@ -1,0 +1,10 @@
+# Rust build artifacts
+target/
+Cargo.lock
+
+# START Ruler Generated Files
+/.cursor/instructions.md
+/.cursor/instructions.md.bak
+/CLAUDE.md
+/CLAUDE.md.bak
+# END Ruler Generated Files

@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
     let ping_handler = unary_handler("ping".to_string(), |ctx: UnaryContext| {
         let message: String = serde_json::from_slice(&ctx.payload)
             .map_err(|e| format!("Failed to deserialize ping payload: {}", e))?;
-        info!("Received ping: {}", message);
+        tracing::debug!("Received ping: {}", message);
         // Return Ok(None) to send ACK without payload
         Ok(None)
     });
