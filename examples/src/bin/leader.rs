@@ -106,7 +106,13 @@ async fn main() -> Result<()> {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     println!("Leader initiating graceful shutdown...");
-    cohort.initiate_graceful_shutdown().await?;
+    // Note: initiate_graceful_shutdown() may hang waiting for worker responses
+    // Use a timeout as a workaround for the API issue
+    match tokio::time::timeout(Duration::from_secs(5), cohort.initiate_graceful_shutdown()).await {
+        Ok(Ok(())) => println!("Graceful shutdown completed"),
+        Ok(Err(e)) => println!("Graceful shutdown error: {}", e),
+        Err(_) => println!("Graceful shutdown timed out (workers may have already exited)"),
+    }
 
     println!("Leader shutting down");
     manager.shutdown().await?;

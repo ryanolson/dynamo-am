@@ -13,9 +13,11 @@
 //! - Better maintainability and modularity
 
 use anyhow::Result;
+use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, warn};
+use uuid::Uuid;
 
 use crate::api::{client::ActiveMessageClient, handler::ActiveMessage};
 use crate::protocols::{ControlMetadata, ResponseContextMetadata};
@@ -40,6 +42,8 @@ pub struct MessageRouter {
     client: Arc<dyn ActiveMessageClient>,
     /// Channel to send processed messages to the dispatcher
     dispatch_tx: mpsc::Sender<DispatchMessage>,
+    /// Cache of known peer IDs to avoid list_peers() on every message
+    known_peers: Arc<RwLock<HashSet<Uuid>>>,
 }
 
 impl MessageRouter {
@@ -53,7 +57,31 @@ impl MessageRouter {
             response_manager,
             client,
             dispatch_tx,
+            known_peers: Arc::new(RwLock::new(HashSet::new())),
         }
+    }
+
+    /// Update the peer cache with current peers from the client.
+    /// This should be called after creating the router to initialize the cache.
+    pub async fn initialize_peer_cache(&self) {
+        if let Ok(peers) = self.client.list_peers().await {
+            let mut cache = self.known_peers.write().await;
+            cache.clear();
+            for peer in peers {
+                cache.insert(peer.instance_id);
+            }
+            debug!("Initialized peer cache with {} peers", cache.len());
+        }
+    }
+
+    /// Check if a peer is known (cached lookup)
+    async fn is_peer_known(&self, peer_id: Uuid) -> bool {
+        self.known_peers.read().await.contains(&peer_id)
+    }
+
+    /// Add a peer to the known peers cache
+    async fn add_known_peer(&self, peer_id: Uuid) {
+        self.known_peers.write().await.insert(peer_id);
     }
 
     /// Process an incoming active message.
@@ -112,12 +140,20 @@ impl MessageRouter {
     }
 
     /// Handle unified response messages (with metadata-based routing)
+    ///
+    /// This method implements two routing strategies:
+    /// 1. **FAST PATH**: Uses `response_type` metadata field (zero JSON parsing for ACK/Response)
+    /// 2. **LEGACY PATH**: Falls back to JSON payload parsing for backward compatibility
+    ///
+    /// The fast path is taken when `control.response_type` is present (new protocol).
+    /// The legacy path is taken when `response_type` is None (old clients/servers).
     async fn handle_response_unified(
         &self,
         response_ctx: ResponseContextMetadata,
         message: ActiveMessage,
     ) -> Result<()> {
         let response_id = response_ctx.response_to;
+        let control = &message.control;
 
         debug!(
             "Handling v2 response to {} from {}",
@@ -125,50 +161,68 @@ impl MessageRouter {
         );
         debug!("Response payload size: {} bytes", message.payload.len());
 
-        // Try to parse the payload as JSON to determine if it's an ACK/NACK or full response
-        if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&message.payload) {
-            debug!("Parsed response as JSON: {:?}", json_value);
-            if let Some(status) = json_value.get("status").and_then(|s| s.as_str()) {
-                debug!("Found status field: {}", status);
-                match status {
-                    "ok" => {
-                        // This is an ACK
-                        debug!("Completing as ACK");
-                        self.response_manager.complete_ack(response_id, Ok(()));
-                        return Ok(());
-                    }
-                    "error" => {
-                        // This is a NACK
-                        let error_msg = json_value
-                            .get("message")
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("Unknown error")
-                            .to_string();
-                        debug!("Completing as NACK: {}", error_msg);
-                        self.response_manager
-                            .complete_ack(response_id, Err(error_msg));
-                        return Ok(());
-                    }
-                    _ => {
-                        // Not an ACK/NACK status, treat as full response
-                        debug!("Unknown status value, treating as full response");
-                    }
+        // ============================================================================
+        // FAST PATH: Metadata-based response type discrimination (NEW PROTOCOL)
+        // ============================================================================
+        // This path is taken when the sender includes `response_type` in metadata.
+        // It eliminates JSON parsing for ACK (0 parses) and Response (0 parses in router).
+        // For NACK, error message is also in metadata, avoiding JSON parse entirely.
+        if let Some(response_type) = control.response_type() {
+            use crate::api::control::ResponseType;
+            debug!("Using metadata response_type: {:?}", response_type);
+
+            match response_type {
+                ResponseType::Ack => {
+                    debug!("Completing as ACK (from metadata)");
+                    self.response_manager.complete_ack(response_id, Ok(()));
+                    return Ok(());
                 }
-            } else {
-                debug!("No status field found, treating as full response");
+                ResponseType::Nack => {
+                    // NEW: Read error message from metadata (zero parse!)
+                    let error_msg = response_ctx.error_message.clone().unwrap_or_else(|| {
+                        // Fallback: parse JSON for legacy messages without error_message in metadata
+                        debug!(
+                            "NACK missing error_message in metadata, falling back to JSON parse"
+                        );
+                        if let Ok(json_value) =
+                            serde_json::from_slice::<serde_json::Value>(&message.payload)
+                        {
+                            json_value
+                                .get("message")
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("Unknown error")
+                                .to_string()
+                        } else {
+                            "Unknown error".to_string()
+                        }
+                    });
+                    debug!("Completing as NACK (from metadata): {}", error_msg);
+                    self.response_manager
+                        .complete_ack(response_id, Err(error_msg));
+                    return Ok(());
+                }
+                ResponseType::Response => {
+                    debug!(
+                        "Completing as full response (from metadata) with {} bytes",
+                        message.payload.len()
+                    );
+                    self.response_manager
+                        .complete_response(response_id, message.payload);
+                    return Ok(());
+                }
             }
-        } else {
-            debug!("Could not parse as JSON, treating as full response");
         }
 
-        // This is a full response message
-        debug!(
-            "Completing as full response with {} bytes",
-            message.payload.len()
+        // ============================================================================
+        // BREAKING CHANGE: response_type is now REQUIRED
+        // ============================================================================
+        // If we reach here, the sender didn't include response_type metadata.
+        // This is a protocol violation in the optimized version.
+        error!(
+            "Response message {} missing required response_type metadata from {}",
+            response_id, message.sender_instance
         );
-        self.response_manager
-            .complete_response(response_id, message.payload);
-        Ok(())
+        anyhow::bail!("Response message missing response_type metadata (protocol version mismatch)")
     }
 
     /// Convert ActiveMessage to DispatchMessage for the v2 dispatcher
@@ -179,23 +233,16 @@ impl MessageRouter {
     ) -> DispatchMessage {
         use std::time::Instant;
 
-        // Determine sender identity based on whether sender is registered
-        let sender_identity = if let Ok(peers) = self.client.list_peers().await {
-            let is_known = peers
-                .iter()
-                .any(|peer| peer.instance_id == message.sender_instance);
-            if is_known {
-                SenderIdentity::Known(message.sender_instance)
-            } else if let Some(endpoint) = control.sender_endpoint() {
-                let peer_info = crate::client::PeerInfo::new(message.sender_instance, endpoint);
-                SenderIdentity::Unknown(peer_info)
-            } else {
-                // No endpoint available, treat as anonymous
-                SenderIdentity::Anonymous
-            }
-        } else {
-            // If we can't list peers, assume known to avoid disruption
+        // Determine sender identity based on whether sender is registered (cached lookup)
+        let is_known = self.is_peer_known(message.sender_instance).await;
+        let sender_identity = if is_known {
             SenderIdentity::Known(message.sender_instance)
+        } else if let Some(endpoint) = control.sender_endpoint() {
+            let peer_info = crate::client::PeerInfo::new(message.sender_instance, endpoint);
+            SenderIdentity::Unknown(peer_info)
+        } else {
+            // No endpoint available, treat as anonymous
+            SenderIdentity::Anonymous
         };
 
         DispatchMessage {
@@ -210,37 +257,33 @@ impl MessageRouter {
 
     /// Handle auto-registration of unknown senders
     async fn handle_auto_registration(&self, message: &ActiveMessage, control: &ControlMetadata) {
-        // Check if sender is already known
-        if let Ok(peers) = self.client.list_peers().await {
-            let is_known = peers
-                .iter()
-                .any(|peer| peer.instance_id == message.sender_instance);
+        // Check if sender is already known (cached lookup)
+        let is_known = self.is_peer_known(message.sender_instance).await;
 
-            if !is_known {
-                // Try to auto-register the sender using endpoint from metadata
-                if let Some(endpoint) = control.sender_endpoint() {
-                    let peer_info = crate::client::PeerInfo::new(message.sender_instance, endpoint);
+        if !is_known {
+            // Try to auto-register the sender using endpoint from metadata
+            if let Some(endpoint) = control.sender_endpoint() {
+                let peer_info = crate::client::PeerInfo::new(message.sender_instance, endpoint);
 
-                    if let Err(e) = self.client.connect_to_peer(peer_info.clone()).await {
-                        warn!(
-                            "Failed to auto-register peer {} at {}: {}",
-                            message.sender_instance, endpoint, e
-                        );
-                    } else {
-                        debug!(
-                            "Auto-registered peer {} at {} for response delivery",
-                            message.sender_instance, endpoint
-                        );
-                    }
+                if let Err(e) = self.client.connect_to_peer(peer_info.clone()).await {
+                    warn!(
+                        "Failed to auto-register peer {} at {}: {}",
+                        message.sender_instance, endpoint, e
+                    );
                 } else {
+                    // Update cache after successful registration
+                    self.add_known_peer(message.sender_instance).await;
                     debug!(
-                        "Unknown sender {} has no endpoint metadata for auto-registration",
-                        message.sender_instance
+                        "Auto-registered peer {} at {} for response delivery",
+                        message.sender_instance, endpoint
                     );
                 }
+            } else {
+                debug!(
+                    "Unknown sender {} has no endpoint metadata for auto-registration",
+                    message.sender_instance
+                );
             }
-        } else {
-            warn!("Failed to check peer list for auto-registration");
         }
     }
 }

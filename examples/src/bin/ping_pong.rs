@@ -24,7 +24,7 @@ use dynamo_am::{
 use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::warn;
 
 /// Generate a unique IPC socket path for testing
 fn unique_ipc_socket_path() -> Result<String> {
@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
     let ping_handler = unary_handler("ping".to_string(), |ctx: UnaryContext| {
         let message: String = serde_json::from_slice(&ctx.payload)
             .map_err(|e| format!("Failed to deserialize ping payload: {}", e))?;
-        info!("Received ping: {}", message);
+        tracing::debug!("Received ping: {}", message);
         // Return Ok(None) to send ACK without payload
         Ok(None)
     });

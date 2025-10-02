@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use dynamo_am::{
-    dispatcher::ActiveMessageDispatcher,
     handler_impls::{typed_unary_handler, TypedContext},
+    runtime::dispatcher::ActiveMessageDispatcher,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

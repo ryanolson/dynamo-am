@@ -15,14 +15,28 @@ use uuid::Uuid;
 use crate::receipt_ack::ClientExpectation;
 
 /// Delivery semantics requested by the sender.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryMode {
+    #[default]
     FireAndForget,
     Confirmed,
     WithResponse,
     WithReceiptAck,
     WithReceiptAndResponse,
+}
+
+/// Response message type for metadata-level discrimination.
+/// This eliminates the need to parse JSON payloads to determine response type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseType {
+    /// Simple acknowledgement (ACK) - message accepted successfully
+    Ack,
+    /// Negative acknowledgement (NACK) - message rejected with error
+    Nack,
+    /// Full response message with payload data
+    Response,
 }
 
 impl DeliveryMode {
@@ -36,6 +50,7 @@ impl DeliveryMode {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(value: &str) -> Option<Self> {
         match value {
             "fire_and_forget" => Some(DeliveryMode::FireAndForget),
@@ -45,12 +60,6 @@ impl DeliveryMode {
             "with_receipt_and_response" => Some(DeliveryMode::WithReceiptAndResponse),
             _ => None,
         }
-    }
-}
-
-impl Default for DeliveryMode {
-    fn default() -> Self {
-        DeliveryMode::FireAndForget
     }
 }
 
@@ -89,6 +98,9 @@ pub struct ResponseContextMetadata {
     pub original_handler: Option<String>,
     #[serde(default)]
     pub envelope_format: bool,
+    /// Error message for NACK responses (avoids JSON parsing)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
 }
 
 /// Hints supplied to transports that need additional routing information.
@@ -125,6 +137,8 @@ pub struct ControlMetadata {
     pub acceptance: Option<AcceptanceMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_ctx: Option<ResponseContextMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_type: Option<ResponseType>,
     #[serde(default, skip_serializing_if = "TransportHints::is_empty")]
     pub transport_hints: TransportHints,
     #[serde(default, skip_serializing_if = "extras_is_empty", flatten)]
@@ -141,6 +155,7 @@ impl ControlMetadata {
             ack: None,
             acceptance: None,
             response_ctx: None,
+            response_type: None,
             transport_hints: TransportHints::default(),
             extras: BTreeMap::new(),
         }
@@ -155,6 +170,7 @@ impl ControlMetadata {
             ack: None,
             acceptance: None,
             response_ctx: None,
+            response_type: None,
             transport_hints: TransportHints::default(),
             extras: BTreeMap::new(),
         }
@@ -172,6 +188,7 @@ impl ControlMetadata {
             ack: None,
             acceptance: None,
             response_ctx: None,
+            response_type: None,
             transport_hints: TransportHints::default(),
             extras: BTreeMap::new(),
         }
@@ -189,6 +206,7 @@ impl ControlMetadata {
             ack: None,
             acceptance: None,
             response_ctx: None,
+            response_type: None,
             transport_hints: TransportHints::default(),
             extras: BTreeMap::new(),
         }
@@ -213,6 +231,7 @@ impl ControlMetadata {
             ack: None,
             acceptance: None,
             response_ctx: None,
+            response_type: None,
             transport_hints: TransportHints::default(),
             extras: BTreeMap::new(),
         }
@@ -252,11 +271,35 @@ impl ControlMetadata {
             response_to,
             original_handler,
             envelope_format,
+            error_message: None,
+        });
+    }
+
+    pub fn set_response_context_with_error(
+        &mut self,
+        response_to: Uuid,
+        original_handler: Option<String>,
+        envelope_format: bool,
+        error_message: String,
+    ) {
+        self.response_ctx = Some(ResponseContextMetadata {
+            response_to,
+            original_handler,
+            envelope_format,
+            error_message: Some(error_message),
         });
     }
 
     pub fn response_context(&self) -> Option<&ResponseContextMetadata> {
         self.response_ctx.as_ref()
+    }
+
+    pub fn set_response_type(&mut self, response_type: ResponseType) {
+        self.response_type = Some(response_type);
+    }
+
+    pub fn response_type(&self) -> Option<ResponseType> {
+        self.response_type
     }
 
     pub fn insert_extra(&mut self, key: impl Into<String>, value: Value) {

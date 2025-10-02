@@ -163,7 +163,6 @@ pub struct MessageTrace {
     pub handler_started: Option<Instant>,
     pub handler_completed: Option<Instant>,
     pub payload_size: usize,
-    pub metadata_size: usize,
     pub dispatch_mode: DispatchMode,
     pub result: Result<(), String>,
 }
@@ -179,7 +178,6 @@ impl MessageTrace {
             handler_started: None,
             handler_completed: None,
             payload_size: 0,
-            metadata_size: 0,
             dispatch_mode: DispatchMode::Spawn,
             result: Ok(()),
         }
@@ -487,10 +485,6 @@ impl MessageDispatcher {
             let mut trace = MessageTrace::new(handler_name.clone(), message.received_at);
             trace.queued_at = Some(Instant::now());
             trace.payload_size = message.payload.len();
-            let control_size = serde_json::to_vec(&message.control)
-                .map(|b| b.len())
-                .unwrap_or(0);
-            trace.metadata_size = control_size;
             Some(Arc::new(RwLock::new(trace)))
         } else {
             None

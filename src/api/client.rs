@@ -11,6 +11,7 @@ use tracing::debug;
 use uuid::Uuid;
 
 use super::builder::{MessageBuilder, NeedsDeliveryMode};
+use super::control::ResponseType;
 use super::handler::{ActiveMessage, HandlerId, InstanceId};
 use super::utils::extract_host;
 use crate::ControlMetadata;
@@ -392,6 +393,7 @@ pub trait ActiveMessageClient: Send + Sync + std::fmt::Debug {
         let ack_bytes = Bytes::from(serde_json::to_vec(&ack_payload)?);
         let mut control = ControlMetadata::fire_and_forget();
         control.set_response_context(response_id, None, false);
+        control.set_response_type(ResponseType::Ack);
 
         let message = ActiveMessage::new(
             Uuid::new_v4(),
@@ -420,6 +422,7 @@ pub trait ActiveMessageClient: Send + Sync + std::fmt::Debug {
         );
         let mut control = ControlMetadata::fire_and_forget();
         control.set_response_context(response_id, None, false);
+        control.set_response_type(ResponseType::Response);
 
         let message = ActiveMessage::new(
             Uuid::new_v4(),
@@ -446,12 +449,14 @@ pub trait ActiveMessageClient: Send + Sync + std::fmt::Debug {
         let error_payload = serde_json::json!({
             "response_id": response_id.to_string(),
             "status": "error",
-            "message": error_msg
+            "message": error_msg.clone()
         });
         let error_bytes = Bytes::from(serde_json::to_vec(&error_payload)?);
         // V2 pattern: use explicit handler names with structured response metadata
+        // Store error message in metadata to avoid JSON parsing on receive side
         let mut control = ControlMetadata::fire_and_forget();
-        control.set_response_context(response_id, None, false);
+        control.set_response_context_with_error(response_id, None, false, error_msg);
+        control.set_response_type(ResponseType::Nack);
 
         let message = ActiveMessage::new(
             Uuid::new_v4(),
