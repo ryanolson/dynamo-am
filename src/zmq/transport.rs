@@ -12,7 +12,8 @@ use tmq::{
 };
 use uuid::Uuid;
 
-use crate::{client::Endpoint, handler::ActiveMessage};
+use crate::api::{client::Endpoint, handler::ActiveMessage};
+use crate::protocols::ControlMetadata;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportType {
@@ -124,18 +125,19 @@ impl ZmqTransport {
     }
 
     pub fn serialize_message(message: &ActiveMessage) -> Result<Multipart> {
-        let mut parts = VecDeque::new();
-
-        // Part 1: Metadata (everything except payload)
+        let control_value = message
+            .control()
+            .to_value()
+            .map_err(|e| anyhow::anyhow!("Failed to serialize control metadata: {}", e))?;
         let metadata = serde_json::json!({
-            "message_id": message.message_id,
-            "handler_name": message.handler_name,
-            "sender_instance": message.sender_instance,
-            "metadata": message.metadata,
+            "message_id": message.message_id().to_string(),
+            "handler_name": message.handler_name(),
+            "sender_instance": message.sender_instance().to_string(),
+            "control": control_value,
         });
-        parts.push_back(Message::from(serde_json::to_vec(&metadata)?));
 
-        // Part 2: Raw payload bytes (no JSON serialization overhead)
+        let mut parts = VecDeque::new();
+        parts.push_back(Message::from(serde_json::to_vec(&metadata)?));
         parts.push_back(Message::from(message.payload.as_ref()));
 
         Ok(Multipart(parts))
@@ -149,40 +151,43 @@ impl ZmqTransport {
             );
         }
 
-        // Part 1: Metadata
+        // Part 1: Control metadata bytes
         let metadata_bytes = &*multipart[0];
         let metadata: serde_json::Value = serde_json::from_slice(metadata_bytes)?;
 
-        // Extract fields from metadata
         let message_id = metadata["message_id"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing message_id in metadata"))?
+            .ok_or_else(|| anyhow::anyhow!("Missing message_id"))?
             .parse::<Uuid>()
             .map_err(|e| anyhow::anyhow!("Invalid message_id: {}", e))?;
 
         let handler_name = metadata["handler_name"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing handler_name in metadata"))?
+            .ok_or_else(|| anyhow::anyhow!("Missing handler_name"))?
             .to_string();
 
         let sender_instance = metadata["sender_instance"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing sender_instance in metadata"))?
+            .ok_or_else(|| anyhow::anyhow!("Missing sender_instance"))?
             .parse::<Uuid>()
             .map_err(|e| anyhow::anyhow!("Invalid sender_instance: {}", e))?;
 
-        let message_metadata = metadata["metadata"].clone();
+        let control_value = metadata
+            .get("control")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Missing control metadata"))?;
+        let control = ControlMetadata::from_value(control_value)?;
 
         // Part 2: Raw payload
         let payload = Bytes::from(multipart[1].to_vec());
 
-        Ok(ActiveMessage {
+        Ok(ActiveMessage::new(
             message_id,
             handler_name,
             sender_instance,
             payload,
-            metadata: message_metadata,
-        })
+            control,
+        ))
     }
 
     pub fn local_endpoint(&self) -> Option<&Endpoint> {

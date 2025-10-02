@@ -3,11 +3,6 @@
 
 [package]
 name = "active_message_example"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
-homepage.workspace = true
 
 [dependencies]
 dynamo-am = { path = ".." }

@@ -9,10 +9,12 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
-use crate::{
+use crate::api::{
     client::ActiveMessageClient,
-    dispatcher::{ControlMessage, MessageDispatcher},
     handler::{ActiveMessage, HandlerEvent, HandlerId, InstanceId},
+};
+use crate::runtime::{
+    dispatcher::{ControlMessage, MessageDispatcher},
     manager::ActiveMessageManager,
     message_router::MessageRouter,
     network_client::NetworkClient,
@@ -173,7 +175,7 @@ impl ZmqActiveMessageManager {
 
         // Create thin ZMQ transport and wrap in BoxedTransport for type erasure
         let zmq_transport = Arc::new(ZmqThinTransport::new());
-        let boxed_transport = crate::boxed_transport::BoxedTransport::new(zmq_transport);
+        let boxed_transport = crate::transport::boxed::BoxedTransport::new(zmq_transport);
 
         // Create NetworkClient (now concrete, no generics!)
         let client = Arc::new(NetworkClient::new(

@@ -21,10 +21,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, error};
 
-use crate::{
-    handler::ActiveMessage,
-    transport::{ThinTransport, TransportType},
-};
+use crate::api::handler::ActiveMessage;
+use crate::transport::{ThinTransport, TransportType};
 
 /// ZMQ-specific wire format (multipart message)
 pub type ZmqWireFormat = Multipart;
@@ -155,20 +153,20 @@ impl ThinTransport for ZmqThinTransport {
 
     fn serialize_to_wire(&self, message: &ActiveMessage) -> Result<Self::WireFormat> {
         // Serialize on caller's thread - this is the hot path optimization
-        let mut parts = VecDeque::new();
-
-        // Part 1: Metadata (everything except payload)
+        let control_value = message
+            .control()
+            .to_value()
+            .map_err(|e| anyhow::anyhow!("Failed to serialize control metadata: {}", e))?;
         let metadata = serde_json::json!({
-            "message_id": message.message_id,
-            "handler_name": message.handler_name,
-            "sender_instance": message.sender_instance,
-            "metadata": message.metadata,
+            "message_id": message.message_id().to_string(),
+            "handler_name": message.handler_name(),
+            "sender_instance": message.sender_instance().to_string(),
+            "control": control_value,
         });
+
+        let mut parts = VecDeque::new();
         parts.push_back(Message::from(serde_json::to_vec(&metadata)?));
-
-        // Part 2: Raw payload bytes (zero-copy)
         parts.push_back(Message::from(message.payload.as_ref()));
-
         Ok(Multipart(parts))
     }
 
@@ -201,6 +199,7 @@ impl ThinTransport for ZmqThinTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocols::ControlMetadata;
     use bytes::Bytes;
     use uuid::Uuid;
 
@@ -220,7 +219,7 @@ mod tests {
             "test_handler".to_string(),
             Uuid::new_v4(),
             Bytes::from("test payload"),
-            serde_json::Value::Null,
+            ControlMetadata::fire_and_forget(),
         );
 
         let wire_format = transport.serialize_to_wire(&message).unwrap();

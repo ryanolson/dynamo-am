@@ -1,51 +1,70 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#![doc = include_str!("../docs/active_message.md")]
+// #![doc = include_str!("../docs/active_message.md")]
 
-pub mod boxed_transport;
-pub mod builder;
-pub mod client;
-pub mod cohort;
-pub mod dispatcher;
-pub mod handler;
-pub mod handler_impls;
-pub mod manager;
-pub mod message_router;
-pub mod network_client;
-pub mod protocol_v2;
-pub mod receipt_ack;
-pub mod response;
-pub mod response_manager;
-pub mod responses;
-pub mod status;
-pub mod system_handlers;
+pub mod api;
+pub mod protocols;
+pub mod runtime;
 pub mod transport;
-pub(crate) mod utils;
-
-pub use builder::MessageBuilder;
-pub use client::ActiveMessageClient;
-pub use cohort::{
-    CohortFailurePolicy, CohortType, LeaderWorkerCohort, LeaderWorkerCohortConfig,
-    LeaderWorkerCohortConfigBuilder, WorkerInfo,
-};
-pub use handler::ActiveMessage;
-pub use handler_impls::{
-    am_handler_with_tracker, typed_unary_handler, typed_unary_handler_with_tracker,
-    unary_handler_with_tracker,
-};
-pub use manager::ActiveMessageManager;
-pub use network_client::NetworkClient;
-pub use receipt_ack::HandlerType; // Re-export for backward compatibility
-pub use response::SingleResponseSender;
-pub use response_manager::{ResponseManager, SharedResponseManager};
-pub use responses::{
-    DiscoverResponse, HealthCheckResponse, JoinCohortResponse, ListHandlersResponse,
-    RegisterServiceResponse, RemoveServiceResponse, RequestShutdownResponse,
-    WaitForHandlerResponse,
-};
-pub use status::{DetachedConfirm, MessageStatus, SendAndConfirm, WithResponse};
-pub use system_handlers::create_core_system_handlers;
-pub use transport::{ConnectionHandle, ThinTransport};
-
 pub mod zmq;
+
+// Public API exports
+pub use api::{
+    builder::MessageBuilder,
+    client::{ActiveMessageClient, PeerInfo, WorkerAddress},
+    handler::{ActiveMessageContext, HandlerEvent, InstanceId},
+    status::{DetachedConfirm, MessageStatus, SendAndConfirm, WithResponse},
+};
+
+pub use protocols::{
+    receipt::{ClientExpectation, ContractInfo, HandlerType, ReceiptAck, ReceiptStatus},
+    response::SingleResponseSender,
+    responses::{
+        DiscoverResponse, HealthCheckResponse, JoinCohortResponse, ListHandlersResponse,
+        RegisterServiceResponse, RemoveServiceResponse, RequestShutdownResponse,
+        WaitForHandlerResponse,
+    },
+    v2::{
+        control::{
+            AcceptanceMetadata, AckMetadata, ControlMetadata, DeliveryMode, ReceiptMetadata,
+            ResponseContextMetadata, ResponseMetadata, TransportHints,
+        },
+        message::ActiveMessage,
+    },
+};
+
+pub use runtime::{
+    cohort::{
+        CohortFailurePolicy, CohortType, LeaderWorkerCohort, LeaderWorkerCohortConfig,
+        LeaderWorkerCohortConfigBuilder, WorkerInfo,
+    },
+    handler_impls::{
+        am_handler_with_tracker, typed_unary_handler, typed_unary_handler_with_tracker,
+        unary_handler_with_tracker,
+    },
+    manager::ActiveMessageManager,
+    network_client::NetworkClient,
+    response_manager::{ResponseManager, SharedResponseManager},
+    system_handlers::create_core_system_handlers,
+};
+
+pub use transport::{ConnectionHandle, ThinTransport, TransportType};
+
+// Compatibility re-exports (legacy module paths)
+pub use api::builder;
+pub use api::client;
+pub use api::handler;
+pub use api::status;
+pub use api::utils;
+pub use protocols::receipt as receipt_ack;
+pub use protocols::response;
+pub use protocols::responses;
+pub use runtime::cohort;
+pub use runtime::dispatcher;
+pub use runtime::handler_impls;
+pub use runtime::manager;
+pub use runtime::message_router;
+pub use runtime::network_client;
+pub use runtime::response_manager;
+pub use runtime::system_handlers;
