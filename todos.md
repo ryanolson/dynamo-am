@@ -90,7 +90,7 @@ For each optimization:
 
 ## Current Status
 
-- [x] Phase 1.1: Response Type Discrimination (COMPLETED on branch `ryan/perf-response-type-discrimination`)
+- [x] Phase 1.1: Response Type Discrimination (COMPLETED - [PR #2](https://github.com/ryanolson/dynamo-am/pull/2))
 - [ ] Phase 1.2: Metrics Overhead
 - [ ] Phase 1.3: Zero-Copy Bytes
 - [ ] Phase 1.4: Auto-Registration Cache
