@@ -14,8 +14,9 @@ use std::fmt;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use super::handler::{ActiveMessage, InstanceId};
-use super::transport::{ThinTransport, TransportType};
+use crate::protocol::message::{ActiveMessage, InstanceId};
+
+use super::{ThinTransport, TransportType};
 
 /// Type-erased message that can be sent through any transport
 type BoxedMessage = Box<dyn Any + Send>;

@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::receipt_ack::ReceiptAck;
+use crate::protocol::receipt::ReceiptAck;
 
 #[derive(Debug)]
 pub struct AckEntry {

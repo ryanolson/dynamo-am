@@ -15,12 +15,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::{
-    builder::MessageBuilder,
-    client::ActiveMessageClient,
-    handler::ActiveMessage,
-    handler::InstanceId,
-};
+use crate::api::{builder::MessageBuilder, client::ActiveMessageClient};
+use crate::protocol::message::{ActiveMessage, InstanceId};
 
 /// Cohort-specific message builder that extends MessageBuilder with rank targeting
 pub struct CohortMessageBuilder<'a> {
@@ -352,84 +348,11 @@ impl LeaderWorkerCohort {
         self.validate_and_add_worker(worker_id, rank).await
     }
 
-    /// Register cohort-specific handlers (_join_cohort) with the dispatcher
-    /// This should only be called by leaders that manage cohorts
-    pub async fn register_handlers(
-        &self,
-        control_tx: &tokio::sync::mpsc::Sender<crate::dispatcher::ControlMessage>,
-        task_tracker: tokio_util::task::TaskTracker,
-    ) -> Result<()> {
-        use crate::handler_impls::{
-            TypedContext, typed_unary_handler_with_tracker,
-        };
-        use crate::responses::JoinCohortResponse;
-
-        let cohort = self.clone();
-
-        // Create handler that captures THIS cohort instance
-        let handler = typed_unary_handler_with_tracker(
-            "_join_cohort".to_string(),
-            move |ctx: TypedContext<serde_json::Value>| {
-                let cohort = cohort.clone();
-                // Use block_in_place for async work in sync handler
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async move {
-                        // Parse rank from request
-                        let rank = ctx
-                            .input
-                            .get("rank")
-                            .and_then(|v| v.as_u64())
-                            .map(|r| r as usize);
-
-                        // Actually add worker to THIS specific cohort
-                        match cohort.add_worker(ctx.sender_id, rank).await {
-                            Ok(position) => {
-                                info!(
-                                    "Worker {} joined cohort at position {} with rank {:?}",
-                                    ctx.sender_id, position, rank
-                                );
-                                Ok(JoinCohortResponse {
-                                    accepted: true,
-                                    position: Some(position),
-                                    expected_rank: rank,
-                                    reason: None,
-                                })
-                            }
-                            Err(e) => {
-                                warn!("Worker {} failed to join cohort: {}", ctx.sender_id, e);
-                                Ok(JoinCohortResponse {
-                                    accepted: false,
-                                    position: None,
-                                    expected_rank: None,
-                                    reason: Some(e.to_string()),
-                                })
-                            }
-                        }
-                    })
-                })
-            },
-            task_tracker,
-        );
-
-        // Register with dispatcher
-        control_tx
-            .send(
-                crate::dispatcher::ControlMessage::Register {
-                    name: "_join_cohort".to_string(),
-                    dispatcher: handler,
-                },
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to register _join_cohort handler: {}", e))?;
-
-        Ok(())
-    }
-
     /// Connect to a worker and add it to the cohort
     /// This is a convenience method for leader-initiated cohort building
     pub async fn connect_and_add_worker(
         &self,
-        address: &crate::client::WorkerAddress,
+        address: &crate::api::client::WorkerAddress,
         rank: Option<usize>,
     ) -> Result<usize> {
         // Connect to worker

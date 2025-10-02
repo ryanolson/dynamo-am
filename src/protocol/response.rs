@@ -10,8 +10,8 @@ use std::fmt::{Debug, Display};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use super::client::ActiveMessageClient;
-use super::handler::InstanceId;
+use crate::api::client::ActiveMessageClient;
+use crate::protocol::message::{ActiveMessage, InstanceId};
 
 /// Response context provided to handlers indicating what kind of response is expected
 #[derive(Debug)]
@@ -24,7 +24,7 @@ pub enum ResponseContext {
 
 /// Response envelope for wrapping both successful and error responses
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) enum ResponseEnvelope {
+pub enum ResponseEnvelope {
     /// Successful response with payload
     Ok(serde_json::Value),
     /// Error response with error message
@@ -48,7 +48,7 @@ impl SingleResponseSender {
         let payload = Bytes::from(serde_json::to_vec(&envelope)?);
 
         // Send response as internal message
-        let response_message = super::handler::ActiveMessage {
+        let response_message = ActiveMessage {
             message_id: Uuid::new_v4(),
             handler_name: "_response".to_string(),
             sender_instance: self.client.instance_id(),
@@ -67,7 +67,7 @@ impl SingleResponseSender {
 
     /// Send raw bytes as response
     pub async fn send_raw(&self, payload: Bytes) -> Result<()> {
-        let response_message = super::handler::ActiveMessage {
+        let response_message = ActiveMessage {
             message_id: Uuid::new_v4(),
             handler_name: "_response".to_string(),
             sender_instance: self.client.instance_id(),
@@ -92,7 +92,7 @@ impl SingleResponseSender {
         let envelope = ResponseEnvelope::Err(error_str);
         let payload = Bytes::from(serde_json::to_vec(&envelope)?);
 
-        let response_message = super::handler::ActiveMessage {
+        let response_message = ActiveMessage {
             message_id: Uuid::new_v4(),
             handler_name: "_response".to_string(),
             sender_instance: self.client.instance_id(),

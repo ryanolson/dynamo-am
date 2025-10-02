@@ -19,8 +19,7 @@ use dynamo_am::{
     handler_impls::{
         am_handler_with_tracker, typed_unary_handler_with_tracker, AmContext, TypedContext,
     },
-    manager::ActiveMessageManager,
-    zmq::ZmqActiveMessageManager,
+    ActiveMessageManagerBuilder,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -65,8 +64,11 @@ async fn main() -> Result<()> {
     let cancel_token = CancellationToken::new();
 
     // Create leader manager
-    let leader_manager =
-        ZmqActiveMessageManager::new(unique_ipc_socket_path()?, cancel_token.clone()).await?;
+    let leader_manager = ActiveMessageManagerBuilder::new()
+        .endpoint(unique_ipc_socket_path()?)
+        .cancel_token(cancel_token.clone())
+        .build()
+        .await?;
 
     let leader_client = leader_manager.client();
     println!("Leader listening on: {}", leader_client.endpoint());
@@ -76,8 +78,11 @@ async fn main() -> Result<()> {
     let mut worker_clients = Vec::new();
 
     for rank in 0..3 {
-        let worker_manager =
-            ZmqActiveMessageManager::new(unique_ipc_socket_path()?, cancel_token.clone()).await?;
+        let worker_manager = ActiveMessageManagerBuilder::new()
+            .endpoint(unique_ipc_socket_path()?)
+            .cancel_token(cancel_token.clone())
+            .build()
+            .await?;
 
         // Register handlers on each worker using the new v2 pattern
         let task_tracker = tokio_util::task::TaskTracker::new();

@@ -10,13 +10,11 @@ use tokio::sync::oneshot;
 use tracing::debug;
 use uuid::Uuid;
 
-use super::builder::{MessageBuilder, NeedsDeliveryMode};
-use super::handler::{ActiveMessage, HandlerId, InstanceId};
-use super::receipt_ack::ReceiptAck;
-use super::responses::{
-    HealthCheckResponse, JoinCohortResponse, RegisterServiceResponse,
-};
-use super::utils::extract_host;
+use crate::api::builder::{MessageBuilder, NeedsDeliveryMode};
+use crate::api::utils::extract_host;
+use crate::protocol::message::{ActiveMessage, HandlerId, InstanceId};
+use crate::protocol::receipt::ReceiptAck;
+use crate::protocol::responses::{HealthCheckResponse, RegisterServiceResponse};
 
 /// Trait for types that can be converted to message payload bytes
 pub trait IntoPayload: Send {
@@ -302,21 +300,6 @@ pub trait ActiveMessageClient: Send + Sync + std::fmt::Debug {
         ensure_bidirectional_connection(self, instance_id).await
     }
 
-    /// Join a leader-worker cohort
-    ///
-    /// Note: This method requires `Self: Sized`. When working with trait objects (`&dyn ActiveMessageClient`),
-    /// use the free function `active_message::client::join_cohort(client, leader_id, rank)` instead.
-    async fn join_cohort(
-        &self,
-        leader_instance_id: InstanceId,
-        rank: Option<usize>,
-    ) -> Result<JoinCohortResponse>
-    where
-        Self: Sized,
-    {
-        join_cohort(self, leader_instance_id, rank).await
-    }
-
     // New builder pattern API
     /// Create an active message builder
     fn active_message(&self, handler: &str) -> Result<MessageBuilder<'_>>
@@ -390,7 +373,7 @@ pub trait ActiveMessageClient: Send + Sync + std::fmt::Debug {
         });
         let ack_bytes = Bytes::from(serde_json::to_vec(&ack_payload)?);
         // V2 pattern: use any handler name (not "_response") with "_response_to" metadata
-        let message = super::handler::ActiveMessage {
+        let message = ActiveMessage {
             message_id: Uuid::new_v4(),
             handler_name: "ack_response".to_string(), // Use a regular handler name, not "_response"
             sender_instance: self.instance_id(),
@@ -421,7 +404,7 @@ pub trait ActiveMessageClient: Send + Sync + std::fmt::Debug {
         });
         // V2 pattern: use any handler name (not "_response") with "_response_to" metadata
         // This allows the response to be routed correctly
-        let message = super::handler::ActiveMessage {
+        let message = ActiveMessage {
             message_id: Uuid::new_v4(),
             handler_name: "response_message".to_string(), // Use a regular handler name, not "_response"
             sender_instance: self.instance_id(),
@@ -450,7 +433,7 @@ pub trait ActiveMessageClient: Send + Sync + std::fmt::Debug {
         });
         let error_bytes = Bytes::from(serde_json::to_vec(&error_payload)?);
         // V2 pattern: use any handler name (not "_response") with "_response_to" metadata
-        let message = super::handler::ActiveMessage {
+        let message = ActiveMessage {
             message_id: Uuid::new_v4(),
             handler_name: "error_response".to_string(), // Use a regular handler name, not "_response"
             sender_instance: self.instance_id(),
@@ -508,24 +491,4 @@ pub async fn ensure_bidirectional_connection(
 
     let response: RegisterServiceResponse = status.await_response().await?;
     Ok(response.registered)
-}
-
-/// Join a leader-worker cohort (works with trait objects)
-pub async fn join_cohort(
-    client: &dyn ActiveMessageClient,
-    leader_instance_id: InstanceId,
-    rank: Option<usize>,
-) -> Result<JoinCohortResponse> {
-    let payload = serde_json::json!({
-        "instance_id": client.instance_id().to_string(),
-        "rank": rank,
-    });
-
-    let status = MessageBuilder::new_unchecked(client, "_join_cohort")
-        .payload(payload)?
-        .expect_response::<JoinCohortResponse>()
-        .send(leader_instance_id)
-        .await?;
-
-    status.await_response().await
 }

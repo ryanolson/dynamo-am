@@ -18,9 +18,11 @@ use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use super::client::{ActiveMessageClient, PeerInfo};
-use super::handler::InstanceId;
-use super::receipt_ack::{ClientExpectation, ContractInfo, HandlerType, ReceiptAck, ReceiptStatus};
+use crate::api::client::{ActiveMessageClient, PeerInfo};
+use crate::protocol::message::InstanceId;
+use crate::protocol::receipt::{
+    ClientExpectation, ContractInfo, HandlerType, ReceiptAck, ReceiptStatus,
+};
 
 /// A transport-agnostic active message for the dispatcher.
 #[derive(Debug, Clone)]
@@ -287,7 +289,7 @@ impl<H: ActiveMessageHandler + 'static> ActiveMessageDispatcher for SpawnedDispa
                     {
                         debug!("Sending acceptance for with_response message {}", accept_id);
 
-                        let accept_message = crate::handler::ActiveMessage {
+                        let accept_message = crate::protocol::message::ActiveMessage {
                             message_id: uuid::Uuid::new_v4(),
                             handler_name: "_accept".to_string(),
                             sender_instance: ctx.client.instance_id(),

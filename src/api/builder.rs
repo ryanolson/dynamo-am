@@ -11,10 +11,10 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use super::client::{ActiveMessageClient, validate_handler_name};
-use super::handler::{ActiveMessage, InstanceId};
-use super::receipt_ack::{ClientExpectation, ReceiptAck, ReceiptStatus};
-use super::status::{DetachedConfirm, MessageStatus, SendAndConfirm, WithResponse};
+use crate::api::client::{ActiveMessageClient, validate_handler_name};
+use crate::api::status::{DetachedConfirm, MessageStatus, SendAndConfirm, WithResponse};
+use crate::protocol::message::{ActiveMessage, InstanceId};
+use crate::protocol::receipt::{ClientExpectation, ReceiptAck, ReceiptStatus};
 
 /// TypeState marker: Builder needs delivery mode selection
 pub struct NeedsDeliveryMode;

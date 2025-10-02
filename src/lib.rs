@@ -3,48 +3,64 @@
 
 #![doc = include_str!("../docs/active_message.md")]
 
-pub mod boxed_transport;
-pub mod builder;
-pub mod client;
-pub mod cohort;
-pub mod dispatcher;
-pub mod handler;
-pub mod handler_impls;
-pub mod manager;
-pub mod message_router;
-pub mod network_client;
-pub mod receipt_ack;
-pub mod response;
-pub mod response_manager;
-pub mod responses;
-pub mod status;
-pub mod system_handlers;
+pub mod api;
+pub mod protocol;
+pub mod runtime;
 pub mod transport;
-pub(crate) mod utils;
 
-pub use builder::MessageBuilder;
-pub use client::ActiveMessageClient;
-pub use cohort::{
-    CohortFailurePolicy, CohortType, LeaderWorkerCohort, LeaderWorkerCohortConfig,
-    LeaderWorkerCohortConfigBuilder, WorkerInfo,
+pub use api::{
+    builder::{MessageBuilder, NeedsDeliveryMode},
+    client::{ActiveMessageClient, IntoPayload, PeerInfo, WorkerAddress},
+    handler::{ActiveMessageContext, HandlerEvent},
+    status::{DetachedConfirm, MessageStatus, SendAndConfirm, WithResponse},
 };
-pub use handler::ActiveMessage;
-pub use handler_impls::{
-    am_handler_with_tracker, typed_unary_handler, typed_unary_handler_with_tracker,
-    unary_handler_with_tracker,
+pub use protocol::{
+    message::{ActiveMessage, HandlerId, InstanceId},
+    receipt::{ClientExpectation, HandlerType, ReceiptAck, ReceiptStatus},
+    response::{ResponseEnvelope, SingleResponseSender},
+    responses::{
+        DiscoverResponse, HealthCheckResponse, ListHandlersResponse, RegisterServiceResponse,
+        RemoveServiceResponse, RequestShutdownResponse, WaitForHandlerResponse,
+    },
 };
-pub use manager::ActiveMessageManager;
-pub use network_client::NetworkClient;
-pub use receipt_ack::HandlerType; // Re-export for backward compatibility
-pub use response::SingleResponseSender;
-pub use response_manager::{ResponseManager, SharedResponseManager};
-pub use responses::{
-    DiscoverResponse, HealthCheckResponse, JoinCohortResponse, ListHandlersResponse,
-    RegisterServiceResponse, RemoveServiceResponse, RequestShutdownResponse,
-    WaitForHandlerResponse,
+pub use runtime::{
+    cohort::{
+        CohortFailurePolicy, CohortType, LeaderWorkerCohort, LeaderWorkerCohortConfig,
+        LeaderWorkerCohortConfigBuilder, WorkerInfo,
+    },
+    handler_impls::{
+        am_handler_with_tracker, typed_unary_handler, typed_unary_handler_with_tracker,
+        unary_handler_with_tracker,
+    },
+    manager::ActiveMessageManager,
+    manager_builder::ActiveMessageManagerBuilder,
+    network_client::NetworkClient,
+    response_manager::{ResponseManager, SharedResponseManager},
+    system_handlers::create_core_system_handlers,
 };
-pub use status::{DetachedConfirm, MessageStatus, SendAndConfirm, WithResponse};
-pub use system_handlers::create_core_system_handlers;
-pub use transport::{ConnectionHandle, ThinTransport};
+pub use transport::{ConnectionHandle, ThinTransport, TransportType};
 
-pub mod zmq;
+// Backward-compatible module aliases to ease migration.
+pub use api::builder;
+pub use api::client;
+pub use api::handler;
+pub use api::status;
+pub use protocol::receipt as receipt_ack;
+pub use protocol::response;
+pub use protocol::responses;
+pub use runtime::cohort;
+pub use runtime::dispatcher;
+pub use runtime::handler_impls;
+pub use runtime::manager;
+pub use runtime::manager_builder;
+pub use runtime::message_router;
+pub use runtime::network_client;
+pub use runtime::response_manager;
+pub use runtime::system_handlers;
+pub use transport::boxed as boxed_transport;
+
+// ZMQ transport implementation - public but hidden from documentation.
+#[doc(hidden)]
+pub mod zmq {
+    pub use crate::transport::zmq::*;
+}

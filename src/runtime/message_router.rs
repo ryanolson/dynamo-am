@@ -18,12 +18,11 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
-use crate::{
-    client::ActiveMessageClient,
-    dispatcher::{DispatchMessage, SenderIdentity},
-    handler::ActiveMessage,
-    response_manager::SharedResponseManager,
-};
+use crate::api::client::ActiveMessageClient;
+use crate::protocol::message::ActiveMessage;
+
+use super::dispatcher::{DispatchMessage, SenderIdentity};
+use super::response_manager::SharedResponseManager;
 
 /// Transport-agnostic message router that processes active messages.
 ///
@@ -264,10 +263,8 @@ impl MessageRouter {
                     .get("_sender_endpoint")
                     .and_then(|v| v.as_str())
                 {
-                    let peer_info = crate::client::PeerInfo::new(
-                        message.sender_instance,
-                        endpoint,
-                    );
+                    let peer_info =
+                        crate::api::client::PeerInfo::new(message.sender_instance, endpoint);
                     SenderIdentity::Unknown(peer_info)
                 } else {
                     // No endpoint available, treat as anonymous
@@ -317,10 +314,8 @@ impl MessageRouter {
                     .get("_sender_endpoint")
                     .and_then(|v| v.as_str())
                 {
-                    let peer_info = crate::client::PeerInfo::new(
-                        message.sender_instance,
-                        endpoint,
-                    );
+                    let peer_info =
+                        crate::api::client::PeerInfo::new(message.sender_instance, endpoint);
 
                     if let Err(e) = self.client.connect_to_peer(peer_info.clone()).await {
                         warn!(
@@ -349,8 +344,8 @@ impl MessageRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use bytes::Bytes;
+    use std::sync::Arc;
     use tokio::sync::mpsc;
     use uuid::Uuid;
 
@@ -371,8 +366,8 @@ mod tests {
             &self.endpoint
         }
 
-        fn peer_info(&self) -> crate::client::PeerInfo {
-            crate::client::PeerInfo::new(self.instance_id, &self.endpoint)
+        fn peer_info(&self) -> crate::api::client::PeerInfo {
+            crate::api::client::PeerInfo::new(self.instance_id, &self.endpoint)
         }
 
         async fn send_message(
@@ -388,14 +383,11 @@ mod tests {
         //     Ok(())
         // }
 
-        async fn list_peers(&self) -> anyhow::Result<Vec<crate::client::PeerInfo>> {
+        async fn list_peers(&self) -> anyhow::Result<Vec<crate::api::client::PeerInfo>> {
             Ok(vec![])
         }
 
-        async fn connect_to_peer(
-            &self,
-            _peer: crate::client::PeerInfo,
-        ) -> anyhow::Result<()> {
+        async fn connect_to_peer(&self, _peer: crate::api::client::PeerInfo) -> anyhow::Result<()> {
             Ok(())
         }
 
@@ -419,7 +411,7 @@ mod tests {
         async fn send_raw_message(
             &self,
             _target: Uuid,
-            _message: crate::handler::ActiveMessage,
+            _message: crate::protocol::message::ActiveMessage,
         ) -> anyhow::Result<()> {
             Ok(())
         }
@@ -454,9 +446,7 @@ mod tests {
             _receipt_id: Uuid,
             _timeout: std::time::Duration,
         ) -> anyhow::Result<
-            tokio::sync::oneshot::Receiver<
-                Result<crate::receipt_ack::ReceiptAck, String>,
-            >,
+            tokio::sync::oneshot::Receiver<Result<crate::receipt_ack::ReceiptAck, String>>,
         > {
             let (_tx, rx) = tokio::sync::oneshot::channel();
             Ok(rx)

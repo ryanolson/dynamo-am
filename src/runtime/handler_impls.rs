@@ -43,10 +43,11 @@ use std::sync::Arc;
 use tracing::{debug, error};
 use uuid::Uuid;
 
-use super::client::ActiveMessageClient;
+use crate::api::client::ActiveMessageClient;
+use crate::protocol::message::InstanceId;
+use crate::protocol::receipt::{ContractInfo, HandlerType};
+
 use super::dispatcher::{ActiveMessageHandler, DispatchMode, SenderAddress};
-use super::handler::InstanceId;
-use super::receipt_ack::{ContractInfo, HandlerType};
 
 // ============================================================================
 // Unified Response Types
@@ -436,10 +437,7 @@ where
 ///
 /// Returns an Arc<dyn ActiveMessageDispatcher> ready for registration.
 /// Creates its own TaskTracker for simplicity - use `am_handler_with_tracker` for production.
-pub fn am_handler<F, Fut>(
-    name: String,
-    f: F,
-) -> Arc<dyn crate::dispatcher::ActiveMessageDispatcher>
+pub fn am_handler<F, Fut>(name: String, f: F) -> Arc<dyn crate::dispatcher::ActiveMessageDispatcher>
 where
     F: Fn(AmContext) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<(), String>> + Send + Sync + 'static,
@@ -479,10 +477,7 @@ where
 ///
 /// Returns an Arc<dyn ActiveMessageDispatcher> ready for registration.
 /// Creates its own TaskTracker for simplicity - use `unary_handler_with_tracker` for production.
-pub fn unary_handler<F>(
-    name: String,
-    f: F,
-) -> Arc<dyn crate::dispatcher::ActiveMessageDispatcher>
+pub fn unary_handler<F>(name: String, f: F) -> Arc<dyn crate::dispatcher::ActiveMessageDispatcher>
 where
     F: Fn(UnaryContext) -> UnifiedResponse + Send + Sync + 'static,
 {
@@ -1147,7 +1142,7 @@ mod tests {
 
     #[test]
     fn test_sender_address_methods() {
-        use crate::client::PeerInfo;
+        use crate::api::client::PeerInfo;
 
         let instance_id = InstanceId::from(uuid::Uuid::new_v4());
 

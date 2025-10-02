@@ -20,8 +20,7 @@
 use anyhow::Result;
 use dynamo_am::{
     client::{ActiveMessageClient, PeerInfo},
-    manager::ActiveMessageManager,
-    zmq::ZmqActiveMessageManager,
+    ActiveMessageManagerBuilder,
 };
 use std::env;
 use tokio_util::sync::CancellationToken;
@@ -48,8 +47,11 @@ async fn main() -> Result<()> {
 
     let cancel_token = CancellationToken::new();
 
-    let manager =
-        ZmqActiveMessageManager::new("tcp://0.0.0.0:0".to_string(), cancel_token.clone()).await?;
+    let manager = ActiveMessageManagerBuilder::new()
+        .endpoint("tcp://0.0.0.0:0".to_string())
+        .cancel_token(cancel_token.clone())
+        .build()
+        .await?;
 
     let client = manager.client();
 
@@ -63,34 +65,11 @@ async fn main() -> Result<()> {
 
     println!("Registered compute handler");
 
-    // Discover leader instance ID (in real usage, this might be configured differently)
-    let leader_instance_id = uuid::Uuid::new_v4();
-    let leader_peer = PeerInfo::new(leader_instance_id, leader_endpoint.clone());
-
-    client.connect_to_peer(leader_peer).await?;
-
-    println!("Connected to leader at {}", leader_endpoint);
-
-    // Join cohort with optional rank - now works directly on concrete client!
-    match client.join_cohort(leader_instance_id, worker_rank).await {
-        Ok(response) => {
-            if response.accepted {
-                println!(
-                    "Successfully joined cohort at position: {:?}",
-                    response.position
-                );
-                if let Some(rank) = response.expected_rank {
-                    println!("Assigned rank: {}", rank);
-                }
-            } else {
-                println!("Failed to join cohort: {:?}", response.reason);
-                return Ok(());
-            }
-        }
-        Err(e) => {
-            println!("Error joining cohort: {}", e);
-            return Ok(());
-        }
+    // Note: Leader will add this worker to the cohort manually
+    // Worker just needs to be connected and ready for work
+    println!("Worker ready and waiting for cohort assignment by leader");
+    if let Some(rank) = worker_rank {
+        println!("Preferred rank: {}", rank);
     }
 
     cancel_token.cancelled().await;
