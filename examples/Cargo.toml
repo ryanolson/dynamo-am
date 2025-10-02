@@ -3,7 +3,7 @@
 
 [package]
 name = "active_message_example"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 dynamo-am = { path = ".." }

@@ -13,9 +13,11 @@
 //! - Better maintainability and modularity
 
 use anyhow::Result;
+use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, warn};
+use uuid::Uuid;
 
 use crate::api::{client::ActiveMessageClient, handler::ActiveMessage};
 use crate::protocols::{ControlMetadata, ResponseContextMetadata};
@@ -40,6 +42,8 @@ pub struct MessageRouter {
     client: Arc<dyn ActiveMessageClient>,
     /// Channel to send processed messages to the dispatcher
     dispatch_tx: mpsc::Sender<DispatchMessage>,
+    /// Cache of known peer IDs to avoid list_peers() on every message
+    known_peers: Arc<RwLock<HashSet<Uuid>>>,
 }
 
 impl MessageRouter {
@@ -53,7 +57,31 @@ impl MessageRouter {
             response_manager,
             client,
             dispatch_tx,
+            known_peers: Arc::new(RwLock::new(HashSet::new())),
         }
+    }
+
+    /// Update the peer cache with current peers from the client.
+    /// This should be called after creating the router to initialize the cache.
+    pub async fn initialize_peer_cache(&self) {
+        if let Ok(peers) = self.client.list_peers().await {
+            let mut cache = self.known_peers.write().await;
+            cache.clear();
+            for peer in peers {
+                cache.insert(peer.instance_id);
+            }
+            debug!("Initialized peer cache with {} peers", cache.len());
+        }
+    }
+
+    /// Check if a peer is known (cached lookup)
+    async fn is_peer_known(&self, peer_id: Uuid) -> bool {
+        self.known_peers.read().await.contains(&peer_id)
+    }
+
+    /// Add a peer to the known peers cache
+    async fn add_known_peer(&self, peer_id: Uuid) {
+        self.known_peers.write().await.insert(peer_id);
     }
 
     /// Process an incoming active message.
@@ -205,23 +233,16 @@ impl MessageRouter {
     ) -> DispatchMessage {
         use std::time::Instant;
 
-        // Determine sender identity based on whether sender is registered
-        let sender_identity = if let Ok(peers) = self.client.list_peers().await {
-            let is_known = peers
-                .iter()
-                .any(|peer| peer.instance_id == message.sender_instance);
-            if is_known {
-                SenderIdentity::Known(message.sender_instance)
-            } else if let Some(endpoint) = control.sender_endpoint() {
-                let peer_info = crate::client::PeerInfo::new(message.sender_instance, endpoint);
-                SenderIdentity::Unknown(peer_info)
-            } else {
-                // No endpoint available, treat as anonymous
-                SenderIdentity::Anonymous
-            }
-        } else {
-            // If we can't list peers, assume known to avoid disruption
+        // Determine sender identity based on whether sender is registered (cached lookup)
+        let is_known = self.is_peer_known(message.sender_instance).await;
+        let sender_identity = if is_known {
             SenderIdentity::Known(message.sender_instance)
+        } else if let Some(endpoint) = control.sender_endpoint() {
+            let peer_info = crate::client::PeerInfo::new(message.sender_instance, endpoint);
+            SenderIdentity::Unknown(peer_info)
+        } else {
+            // No endpoint available, treat as anonymous
+            SenderIdentity::Anonymous
         };
 
         DispatchMessage {
@@ -236,37 +257,33 @@ impl MessageRouter {
 
     /// Handle auto-registration of unknown senders
     async fn handle_auto_registration(&self, message: &ActiveMessage, control: &ControlMetadata) {
-        // Check if sender is already known
-        if let Ok(peers) = self.client.list_peers().await {
-            let is_known = peers
-                .iter()
-                .any(|peer| peer.instance_id == message.sender_instance);
+        // Check if sender is already known (cached lookup)
+        let is_known = self.is_peer_known(message.sender_instance).await;
 
-            if !is_known {
-                // Try to auto-register the sender using endpoint from metadata
-                if let Some(endpoint) = control.sender_endpoint() {
-                    let peer_info = crate::client::PeerInfo::new(message.sender_instance, endpoint);
+        if !is_known {
+            // Try to auto-register the sender using endpoint from metadata
+            if let Some(endpoint) = control.sender_endpoint() {
+                let peer_info = crate::client::PeerInfo::new(message.sender_instance, endpoint);
 
-                    if let Err(e) = self.client.connect_to_peer(peer_info.clone()).await {
-                        warn!(
-                            "Failed to auto-register peer {} at {}: {}",
-                            message.sender_instance, endpoint, e
-                        );
-                    } else {
-                        debug!(
-                            "Auto-registered peer {} at {} for response delivery",
-                            message.sender_instance, endpoint
-                        );
-                    }
+                if let Err(e) = self.client.connect_to_peer(peer_info.clone()).await {
+                    warn!(
+                        "Failed to auto-register peer {} at {}: {}",
+                        message.sender_instance, endpoint, e
+                    );
                 } else {
+                    // Update cache after successful registration
+                    self.add_known_peer(message.sender_instance).await;
                     debug!(
-                        "Unknown sender {} has no endpoint metadata for auto-registration",
-                        message.sender_instance
+                        "Auto-registered peer {} at {} for response delivery",
+                        message.sender_instance, endpoint
                     );
                 }
+            } else {
+                debug!(
+                    "Unknown sender {} has no endpoint metadata for auto-registration",
+                    message.sender_instance
+                );
             }
-        } else {
-            warn!("Failed to check peer list for auto-registration");
         }
     }
 }
