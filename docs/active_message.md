@@ -6,12 +6,6 @@ The ActiveMessage system provides a high-performance distributed messaging frame
 
 The system is built on clean architectural layers with clear separation of concerns:
 
-### Module Layout
-- **`api/`**: User-facing traits and helpers (`ActiveMessageClient`, `MessageBuilder`, status types, handler context utilities).
-- **`protocol/`**: Serde-friendly payloads and wire contracts (`ActiveMessage`, receipt/response envelopes, typed discovery responses).
-- **`runtime/`**: Business logic implementations (network client, dispatcher, manager, cohorts, built-in handlers).
-- **`transport/`**: Concrete transport adapters and thin-transport wrappers (ZeroMQ lives here today alongside the type-erased boxing utilities).
-
 ### Transport Layer (Internal)
 - **ThinTransport trait**: Pure transport abstraction that only handles raw bytes
 - **BoxedTransport**: Type-erased wrapper for ThinTransport (hides generic parameters)
@@ -181,39 +175,17 @@ pub trait ActiveMessageManager: Send + Sync {
 }
 ```
 
-**Implementation Details**
-- Dual transport binding (TCP + IPC) via ZMQ
+**Implementation: ZmqActiveMessageManager**
+- Dual transport binding (TCP + IPC)
 - MessageDispatcher for handler management
 - Automatic system handler registration
 - Background tasks for message receiving and cleanup
 
-## Creating a Manager
+## ZMQ Implementation
 
-Use the builder pattern to create an `ActiveMessageManager`:
+### Transport Architecture
 
-```rust
-use dynamo_am::ActiveMessageManagerBuilder;
-use tokio_util::sync::CancellationToken;
-
-let cancel_token = CancellationToken::new();
-
-let manager = ActiveMessageManagerBuilder::new()
-    .endpoint("tcp://0.0.0.0:5555".to_string())
-    .cancel_token(cancel_token)
-    .build()
-    .await?;
-
-// The manager automatically creates:
-// - TCP endpoint: tcp://0.0.0.0:5555
-// - IPC endpoint: ipc:///tmp/dynamo-am-{instance-id}.ipc (for same-host optimization)
-```
-
-The builder pattern abstracts away transport-specific details. Currently, the default
-transport is ZMQ, but the API is designed to support multiple transports in the future.
-
-## Transport Implementation (Advanced)
-
-The ZMQ transport implementation demonstrates the transport abstraction:
+The ZMQ implementation demonstrates the transport abstraction:
 
 1. **ZmqThinTransport**: Implements ThinTransport trait
    - Creates per-endpoint transport workers
@@ -229,6 +201,21 @@ The ZMQ transport implementation demonstrates the transport abstraction:
    ```rust
    pub type ZmqWireFormat = tmq::Multipart;
    ```
+
+### Manager Setup
+
+The ZmqActiveMessageManager binds to both TCP and IPC endpoints:
+
+```rust
+let manager = ZmqActiveMessageManager::new(
+    "tcp://0.0.0.0:5555".to_string(),
+    cancel_token,
+).await?;
+
+// Automatically creates:
+// - TCP endpoint: tcp://0.0.0.0:5555
+// - IPC endpoint: ipc:///tmp/dynamo-am-{instance-id}.ipc
+```
 
 **Internal Architecture:**
 1. TCP and IPC transports read from ZMQ sockets
@@ -271,22 +258,21 @@ let results: Vec<Response> = cohort.par_map(
 ### Basic Service Setup
 
 ```rust
-use dynamo_am::{
-    ActiveMessageManagerBuilder,
+use dynamo_runtime::active_message::{
+    manager::ActiveMessageManager,
+    zmq::ZmqActiveMessageManager,
     handler_impls::typed_unary_handler_with_tracker,
 };
-use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cancel_token = CancellationToken::new();
 
     // 1. Create manager
-    let manager = ActiveMessageManagerBuilder::new()
-        .endpoint("tcp://0.0.0.0:5555".to_string())
-        .cancel_token(cancel_token.clone())
-        .build()
-        .await?;
+    let manager = ZmqActiveMessageManager::new(
+        "tcp://0.0.0.0:5555".to_string(),
+        cancel_token.clone(),
+    ).await?;
 
     // 2. Register handlers
     let task_tracker = TaskTracker::new();
@@ -320,11 +306,10 @@ async fn main() -> Result<()> {
 
 **Leader:**
 ```rust
-let manager = ActiveMessageManagerBuilder::new()
-    .endpoint("tcp://0.0.0.0:5555".to_string())
-    .cancel_token(cancel_token)
-    .build()
-    .await?;
+let manager = ZmqActiveMessageManager::new(
+    "tcp://0.0.0.0:5555".to_string(),
+    cancel_token,
+).await?;
 
 let client = manager.client();
 let cohort = Arc::new(LeaderWorkerCohort::new(
@@ -346,11 +331,10 @@ let results = cohort.par_map("compute", |rank, _| {
 
 **Worker:**
 ```rust
-let manager = ActiveMessageManagerBuilder::new()
-    .endpoint("tcp://0.0.0.0:0".to_string())  // Random port
-    .cancel_token(cancel_token)
-    .build()
-    .await?;
+let manager = ZmqActiveMessageManager::new(
+    "tcp://0.0.0.0:0".to_string(),  // Random port
+    cancel_token,
+).await?;
 
 // Register compute handler
 let handler = typed_unary_handler_with_tracker(
@@ -415,7 +399,7 @@ The system provides several built-in handlers (all prefixed with `_`):
 - **`_discover`**: Endpoint and capability discovery
 - **`_request_shutdown`**: Graceful shutdown coordination
 
-System handlers are automatically registered when the `ActiveMessageManager` is created.
+System handlers are automatically registered by `ZmqActiveMessageManager`.
 
 ## Error Handling
 

@@ -11,10 +11,23 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use crate::api::client::{ActiveMessageClient, validate_handler_name};
-use crate::api::status::{DetachedConfirm, MessageStatus, SendAndConfirm, WithResponse};
-use crate::protocol::message::{ActiveMessage, InstanceId};
-use crate::protocol::receipt::{ClientExpectation, ReceiptAck, ReceiptStatus};
+use super::client::{ActiveMessageClient, validate_handler_name};
+use super::handler::{ActiveMessage as LegacyActiveMessage, InstanceId};
+use super::receipt_ack::{ClientExpectation, ReceiptAck, ReceiptStatus};
+use super::status::{DetachedConfirm, MessageStatus, SendAndConfirm, WithResponse};
+use crate::protocol_v2::{ActiveMessage as V2ActiveMessage, ControlMetadata};
+
+fn build_legacy_message(
+    message_id: Uuid,
+    handler_name: String,
+    sender_instance: InstanceId,
+    payload: Bytes,
+    control: ControlMetadata,
+) -> LegacyActiveMessage {
+    let v2_message =
+        V2ActiveMessage::new(message_id, handler_name, sender_instance, payload, control);
+    v2_message.into()
+}
 
 /// TypeState marker: Builder needs delivery mode selection
 pub struct NeedsDeliveryMode;
@@ -201,29 +214,20 @@ impl<'a> DetachedReceiptBuilder<'a> {
             .register_receipt(message_id, self.timeout)
             .await?;
 
-        // Create message with receipt ACK expectation
-        let mut metadata = serde_json::json!({
-            "_mode": "with_receipt_ack",
-            "_receipt_id": message_id.to_string(),
-            "_client_expectation": self.client_expectation
-        });
-
-        // Include endpoint if target doesn't have return connection to us
+        let mut control = ControlMetadata::with_receipt(message_id, self.client_expectation);
         if !self.client.has_incoming_connection_from(target).await {
-            metadata["_sender_endpoint"] =
-                serde_json::Value::String(self.client.endpoint().to_string());
+            control.set_sender_endpoint(self.client.endpoint().to_string());
         }
 
-        let message = ActiveMessage {
+        let legacy = build_legacy_message(
             message_id,
-            handler_name: self.handler_name,
-            sender_instance: self.client.instance_id(),
-            payload: self.payload.unwrap_or_default(),
-            metadata,
-        };
+            self.handler_name,
+            self.client.instance_id(),
+            self.payload.unwrap_or_default(),
+            control,
+        );
 
-        // Send the message
-        self.client.send_raw_message(target, message).await?;
+        self.client.send_raw_message(target, legacy).await?;
 
         Ok(ReceiptHandle::new(
             message_id,
@@ -250,29 +254,24 @@ impl<'a> DetachedReceiptBuilder<'a> {
             .register_response(message_id, response_tx)
             .await?;
 
-        let mut metadata = serde_json::json!({
-            "_mode": "with_receipt_and_response",
-            "_receipt_id": message_id.to_string(),
-            "_response_id": message_id.to_string(),
-            "_client_expectation": self.client_expectation
-        });
-
-        // Include endpoint if target doesn't have return connection to us
+        let mut control = ControlMetadata::with_receipt_and_response(
+            message_id,
+            message_id,
+            self.client_expectation,
+        );
         if !self.client.has_incoming_connection_from(target).await {
-            metadata["_sender_endpoint"] =
-                serde_json::Value::String(self.client.endpoint().to_string());
+            control.set_sender_endpoint(self.client.endpoint().to_string());
         }
 
-        let message = ActiveMessage {
+        let legacy = build_legacy_message(
             message_id,
-            handler_name: self.handler_name,
-            sender_instance: self.client.instance_id(),
-            payload: self.payload.unwrap_or_default(),
-            metadata,
-        };
+            self.handler_name,
+            self.client.instance_id(),
+            self.payload.unwrap_or_default(),
+            control,
+        );
 
-        // Send the message
-        self.client.send_raw_message(target, message).await?;
+        self.client.send_raw_message(target, legacy).await?;
 
         Ok(ReceiptHandle::new(
             message_id,
@@ -357,17 +356,21 @@ impl<'a> MessageBuilder<'a, NeedsDeliveryMode> {
             .target_instance
             .ok_or_else(|| anyhow::anyhow!("target_instance must be set before execute()"))?;
 
-        let message = ActiveMessage {
-            message_id: Uuid::new_v4(),
-            handler_name: self.handler_name,
-            sender_instance: self.client.instance_id(),
-            payload: self.payload.unwrap_or_default(),
-            metadata: serde_json::json!({
-                "_mode": "fire_and_forget"
-            }),
-        };
+        let message_id = Uuid::new_v4();
+        let mut control = ControlMetadata::fire_and_forget();
+        if !self.client.has_incoming_connection_from(target).await {
+            control.set_sender_endpoint(self.client.endpoint().to_string());
+        }
 
-        self.client.send_raw_message(target, message).await
+        let legacy = build_legacy_message(
+            message_id,
+            self.handler_name,
+            self.client.instance_id(),
+            self.payload.unwrap_or_default(),
+            control,
+        );
+
+        self.client.send_raw_message(target, legacy).await
     }
 
     /// Send and wait for ACK confirmation
@@ -377,27 +380,20 @@ impl<'a> MessageBuilder<'a, NeedsDeliveryMode> {
         // Register for ACK notification
         let ack_rx = self.client.register_ack(message_id, self.timeout).await?;
 
-        // Check if we need to include endpoint for auto-registration
-        let mut metadata = serde_json::json!({
-            "_mode": "confirmed",
-            "_accept_id": message_id.to_string()
-        });
-
-        // Include endpoint if target doesn't have return connection to us
+        let mut control = ControlMetadata::confirmed(message_id);
         if !self.client.has_incoming_connection_from(target).await {
-            metadata["_sender_endpoint"] =
-                serde_json::Value::String(self.client.endpoint().to_string());
+            control.set_sender_endpoint(self.client.endpoint().to_string());
         }
 
-        let message = ActiveMessage {
+        let legacy = build_legacy_message(
             message_id,
-            handler_name: self.handler_name,
-            sender_instance: self.client.instance_id(),
-            payload: self.payload.unwrap_or_default(),
-            metadata,
-        };
+            self.handler_name,
+            self.client.instance_id(),
+            self.payload.unwrap_or_default(),
+            control,
+        );
 
-        self.client.send_raw_message(target, message).await?;
+        self.client.send_raw_message(target, legacy).await?;
 
         // Wait for ACK
         tokio::time::timeout(self.timeout, ack_rx)
@@ -416,27 +412,20 @@ impl<'a> MessageBuilder<'a, NeedsDeliveryMode> {
         // Register for ACK notification
         let ack_rx = self.client.register_ack(message_id, self.timeout).await?;
 
-        // Check if we need to include endpoint for auto-registration
-        let mut metadata = serde_json::json!({
-            "_mode": "confirmed",
-            "_accept_id": message_id.to_string()
-        });
-
-        // Include endpoint if target doesn't have return connection to us
+        let mut control = ControlMetadata::confirmed(message_id);
         if !self.client.has_incoming_connection_from(target).await {
-            metadata["_sender_endpoint"] =
-                serde_json::Value::String(self.client.endpoint().to_string());
+            control.set_sender_endpoint(self.client.endpoint().to_string());
         }
 
-        let message = ActiveMessage {
+        let legacy = build_legacy_message(
             message_id,
-            handler_name: self.handler_name,
-            sender_instance: self.client.instance_id(),
-            payload: self.payload.unwrap_or_default(),
-            metadata,
-        };
+            self.handler_name,
+            self.client.instance_id(),
+            self.payload.unwrap_or_default(),
+            control,
+        );
 
-        self.client.send_raw_message(target, message).await?;
+        self.client.send_raw_message(target, legacy).await?;
 
         // Convert ACK receiver to acceptance receiver for compatibility
         let (accept_tx, accept_rx) = oneshot::channel();
@@ -540,28 +529,20 @@ impl<'a> MessageBuilder<'a, WithResponseExpected> {
             .register_response(message_id, response_tx)
             .await?;
 
-        // Check if we need to include endpoint for auto-registration
-        let mut metadata = serde_json::json!({
-            "_mode": "with_response",
-            "_accept_id": message_id.to_string(),
-            "_response_id": message_id.to_string()
-        });
-
-        // Include endpoint if target doesn't have return connection to us
+        let mut control = ControlMetadata::with_response(message_id, message_id);
         if !self.client.has_incoming_connection_from(target).await {
-            metadata["_sender_endpoint"] =
-                serde_json::Value::String(self.client.endpoint().to_string());
+            control.set_sender_endpoint(self.client.endpoint().to_string());
         }
 
-        let message = ActiveMessage {
+        let legacy = build_legacy_message(
             message_id,
-            handler_name: self.handler_name,
-            sender_instance: self.client.instance_id(),
-            payload: self.payload.unwrap_or_default(),
-            metadata,
-        };
+            self.handler_name,
+            self.client.instance_id(),
+            self.payload.unwrap_or_default(),
+            control,
+        );
 
-        self.client.send_raw_message(target, message).await?;
+        self.client.send_raw_message(target, legacy).await?;
 
         // Wait for acceptance
         tokio::time::timeout(self.timeout, accept_rx)

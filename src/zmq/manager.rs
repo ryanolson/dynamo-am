@@ -9,13 +9,15 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
-use crate::api::client::ActiveMessageClient;
-use crate::api::handler::HandlerEvent;
-use crate::protocol::message::{ActiveMessage, HandlerId, InstanceId};
-use crate::runtime::dispatcher::{ControlMessage, MessageDispatcher};
-use crate::runtime::message_router::MessageRouter;
-use crate::runtime::network_client::NetworkClient;
-use crate::runtime::response_manager::{ResponseManager, SharedResponseManager};
+use crate::{
+    client::ActiveMessageClient,
+    dispatcher::{ControlMessage, MessageDispatcher},
+    handler::{ActiveMessage, HandlerEvent, HandlerId, InstanceId},
+    manager::ActiveMessageManager,
+    message_router::MessageRouter,
+    network_client::NetworkClient,
+    response_manager::{ResponseManager, SharedResponseManager},
+};
 
 use super::{discovery, thin_transport::ZmqThinTransport, transport::ZmqTransport};
 
@@ -92,10 +94,27 @@ impl ZmqActiveMessageManager {
         &self.control_tx
     }
 
+    /// Register a handler with the message dispatcher
+    pub async fn register_handler(
+        &self,
+        name: String,
+        handler: Arc<dyn crate::dispatcher::ActiveMessageDispatcher>,
+    ) -> Result<()> {
+        use crate::dispatcher::ControlMessage;
+
+        self.control_tx
+            .send(ControlMessage::Register {
+                name,
+                dispatcher: handler,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to register handler: {}", e))
+    }
+
     /// Get PeerInfo representing this manager with dual endpoints
-    pub async fn peer_info(&self) -> crate::api::client::PeerInfo {
+    pub async fn peer_info(&self) -> crate::client::PeerInfo {
         let state = self.state.read().await;
-        crate::api::client::PeerInfo::new_dual(
+        crate::client::PeerInfo::new_dual(
             state.instance_id,
             state.tcp_endpoint.clone(),
             state.ipc_endpoint.clone(),
@@ -360,38 +379,9 @@ impl ZmqActiveMessageManager {
 }
 
 #[async_trait]
-impl crate::manager::ManagerTransport for ZmqActiveMessageManager {
+impl ActiveMessageManager for ZmqActiveMessageManager {
     fn client(&self) -> Arc<dyn ActiveMessageClient> {
         self.client.clone()
-    }
-
-    async fn peer_info(&self) -> crate::api::client::PeerInfo {
-        let state = self.state.read().await;
-        crate::api::client::PeerInfo::new_dual(
-            state.instance_id,
-            state.tcp_endpoint.clone(),
-            state.ipc_endpoint.clone(),
-        )
-    }
-
-    fn control_tx(&self) -> &tokio::sync::mpsc::Sender<crate::dispatcher::ControlMessage> {
-        &self.control_tx
-    }
-
-    async fn register_handler(
-        &self,
-        name: String,
-        handler: Arc<dyn crate::dispatcher::ActiveMessageDispatcher>,
-    ) -> Result<()> {
-        use crate::dispatcher::ControlMessage;
-
-        self.control_tx
-            .send(ControlMessage::Register {
-                name,
-                dispatcher: handler,
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to register handler: {}", e))
     }
 
     async fn deregister_handler(&self, name: &str) -> Result<()> {
@@ -485,9 +475,5 @@ impl crate::manager::ManagerTransport for ZmqActiveMessageManager {
 
         info!("ZmqActiveMessageManager shutdown complete");
         Ok(())
-    }
-
-    fn cancel_token(&self) -> CancellationToken {
-        self.cancel_token.clone()
     }
 }

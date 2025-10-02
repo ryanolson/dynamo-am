@@ -43,11 +43,10 @@ use std::sync::Arc;
 use tracing::{debug, error};
 use uuid::Uuid;
 
-use crate::api::client::ActiveMessageClient;
-use crate::protocol::message::InstanceId;
-use crate::protocol::receipt::{ContractInfo, HandlerType};
-
+use super::client::ActiveMessageClient;
 use super::dispatcher::{ActiveMessageHandler, DispatchMode, SenderAddress};
+use super::handler::InstanceId;
+use super::receipt_ack::{ContractInfo, HandlerType};
 
 // ============================================================================
 // Unified Response Types
@@ -1142,7 +1141,7 @@ mod tests {
 
     #[test]
     fn test_sender_address_methods() {
-        use crate::api::client::PeerInfo;
+        use crate::client::PeerInfo;
 
         let instance_id = InstanceId::from(uuid::Uuid::new_v4());
 

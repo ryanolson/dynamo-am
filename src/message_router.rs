@@ -16,13 +16,14 @@ use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
-use uuid::Uuid;
 
-use crate::api::client::ActiveMessageClient;
-use crate::protocol::message::ActiveMessage;
-
-use super::dispatcher::{DispatchMessage, SenderIdentity};
-use super::response_manager::SharedResponseManager;
+use crate::{
+    client::ActiveMessageClient,
+    dispatcher::{DispatchMessage, SenderIdentity},
+    handler::ActiveMessage,
+    protocol_v2::{ControlMetadata, ResponseContextMetadata},
+    response_manager::SharedResponseManager,
+};
 
 /// Transport-agnostic message router that processes active messages.
 ///
@@ -66,34 +67,33 @@ impl MessageRouter {
     /// - Response messages are correlated with pending requests
     /// - Regular messages are auto-registered and forwarded to dispatcher
     pub async fn route_message(&self, message: ActiveMessage) -> Result<()> {
+        let control = ControlMetadata::from_json(message.metadata.clone());
+
         // Handle special internal messages that bypass the dispatcher
         if message.handler_name == "_accept" {
-            return self.handle_acceptance(message).await;
+            return self.handle_acceptance(message, control).await;
         }
 
-        // Check if this is a response message based on metadata (v2 pattern)
-        // v2 handlers send responses with original handler name but include _response_to metadata
-        if let Some(response_to) = message
-            .metadata
-            .get("_response_to")
-            .and_then(|v| v.as_str())
-        {
-            let response_to = response_to.to_string(); // Clone before moving message
-            debug!("Received response message for request {}", response_to);
-            return self.handle_response_unified(&response_to, message).await;
+        // Check if this is a response message based on control metadata
+        if let Some(response_ctx) = control.response_context().cloned() {
+            debug!(
+                "Received response message for request {}",
+                response_ctx.response_to
+            );
+            return self.handle_response_unified(response_ctx, message).await;
         }
 
         // Legacy v1 response pattern (uses "_response" handler name)
         if message.handler_name == "_response" {
-            return self.handle_response(message).await;
+            return self.handle_response(message, control).await;
         }
 
         // Handle auto-registration for unknown senders
         // This is transport-agnostic business logic that belongs in the router
-        self.handle_auto_registration(&message).await;
+        self.handle_auto_registration(&message, &control).await;
 
         // Convert ActiveMessage to DispatchMessage
-        let dispatch_message = self.convert_to_dispatch_message(message).await;
+        let dispatch_message = self.convert_to_dispatch_message(message, control).await;
 
         // Forward to MessageDispatcher
         if let Err(e) = self.dispatch_tx.send(dispatch_message).await {
@@ -104,10 +104,12 @@ impl MessageRouter {
     }
 
     /// Handle acceptance messages for pending requests
-    async fn handle_acceptance(&self, message: ActiveMessage) -> Result<()> {
-        if let Some(accept_for_str) = message.metadata.get("_accept_for").and_then(|v| v.as_str())
-            && let Ok(accept_id) = Uuid::parse_str(accept_for_str)
-        {
+    async fn handle_acceptance(
+        &self,
+        message: ActiveMessage,
+        control: ControlMetadata,
+    ) -> Result<()> {
+        if let Some(accept_id) = control.acceptance().or_else(|| control.accept_id) {
             self.response_manager.complete_acceptance(accept_id);
             return Ok(());
         }
@@ -118,10 +120,10 @@ impl MessageRouter {
     /// Handle unified response messages (with metadata-based routing)
     async fn handle_response_unified(
         &self,
-        response_to: &str,
+        response_ctx: ResponseContextMetadata,
         message: ActiveMessage,
     ) -> Result<()> {
-        let response_id = Uuid::parse_str(response_to)?;
+        let response_id = response_ctx.response_to;
 
         debug!(
             "Handling v2 response to {} from {}",
@@ -176,13 +178,13 @@ impl MessageRouter {
     }
 
     /// Handle legacy v1 response messages
-    async fn handle_response(&self, message: ActiveMessage) -> Result<()> {
-        if let Some(response_to_str) = message
-            .metadata
-            .get("_response_to")
-            .and_then(|v| v.as_str())
-            && let Ok(response_id) = Uuid::parse_str(response_to_str)
-        {
+    async fn handle_response(
+        &self,
+        message: ActiveMessage,
+        control: ControlMetadata,
+    ) -> Result<()> {
+        if let Some(response_ctx) = control.response_context() {
+            let response_id = response_ctx.response_to;
             debug!(
                 "Handling legacy response to {} from {}",
                 response_id, message.sender_instance
@@ -246,7 +248,11 @@ impl MessageRouter {
     }
 
     /// Convert ActiveMessage to DispatchMessage for the v2 dispatcher
-    async fn convert_to_dispatch_message(&self, message: ActiveMessage) -> DispatchMessage {
+    async fn convert_to_dispatch_message(
+        &self,
+        message: ActiveMessage,
+        control: ControlMetadata,
+    ) -> DispatchMessage {
         use std::time::Instant;
 
         // Determine sender identity based on whether sender is registered
@@ -256,20 +262,12 @@ impl MessageRouter {
                 .any(|peer| peer.instance_id == message.sender_instance);
             if is_known {
                 SenderIdentity::Known(message.sender_instance)
+            } else if let Some(endpoint) = control.sender_endpoint() {
+                let peer_info = crate::client::PeerInfo::new(message.sender_instance, endpoint);
+                SenderIdentity::Unknown(peer_info)
             } else {
-                // If unknown, extract endpoint from metadata and create PeerInfo
-                if let Some(endpoint) = message
-                    .metadata
-                    .get("_sender_endpoint")
-                    .and_then(|v| v.as_str())
-                {
-                    let peer_info =
-                        crate::api::client::PeerInfo::new(message.sender_instance, endpoint);
-                    SenderIdentity::Unknown(peer_info)
-                } else {
-                    // No endpoint available, treat as anonymous
-                    SenderIdentity::Anonymous
-                }
+                // No endpoint available, treat as anonymous
+                SenderIdentity::Anonymous
             }
         } else {
             // If we can't list peers, assume known to avoid disruption
@@ -277,16 +275,13 @@ impl MessageRouter {
         };
 
         // Convert metadata from serde_json::Value to bytes if present
-        let metadata = if message.metadata != serde_json::Value::Null {
-            match serde_json::to_vec(&message.metadata) {
-                Ok(bytes) => Some(bytes::Bytes::from(bytes)),
-                Err(e) => {
-                    error!("Failed to serialize metadata: {}", e);
-                    None
-                }
+        let metadata = match control.to_bytes() {
+            Ok(bytes) if !bytes.is_empty() => Some(bytes::Bytes::from(bytes)),
+            Ok(_) => None,
+            Err(e) => {
+                error!("Failed to serialize control metadata: {}", e);
+                None
             }
-        } else {
-            None
         };
 
         DispatchMessage {
@@ -294,13 +289,14 @@ impl MessageRouter {
             handler_name: message.handler_name,
             payload: message.payload,
             sender_identity,
+            control: Some(control),
             metadata,
             received_at: Instant::now(),
         }
     }
 
     /// Handle auto-registration of unknown senders
-    async fn handle_auto_registration(&self, message: &ActiveMessage) {
+    async fn handle_auto_registration(&self, message: &ActiveMessage, control: &ControlMetadata) {
         // Check if sender is already known
         if let Ok(peers) = self.client.list_peers().await {
             let is_known = peers
@@ -309,13 +305,8 @@ impl MessageRouter {
 
             if !is_known {
                 // Try to auto-register the sender using endpoint from metadata
-                if let Some(endpoint) = message
-                    .metadata
-                    .get("_sender_endpoint")
-                    .and_then(|v| v.as_str())
-                {
-                    let peer_info =
-                        crate::api::client::PeerInfo::new(message.sender_instance, endpoint);
+                if let Some(endpoint) = control.sender_endpoint() {
+                    let peer_info = crate::client::PeerInfo::new(message.sender_instance, endpoint);
 
                     if let Err(e) = self.client.connect_to_peer(peer_info.clone()).await {
                         warn!(
@@ -366,8 +357,8 @@ mod tests {
             &self.endpoint
         }
 
-        fn peer_info(&self) -> crate::api::client::PeerInfo {
-            crate::api::client::PeerInfo::new(self.instance_id, &self.endpoint)
+        fn peer_info(&self) -> crate::client::PeerInfo {
+            crate::client::PeerInfo::new(self.instance_id, &self.endpoint)
         }
 
         async fn send_message(
@@ -383,11 +374,11 @@ mod tests {
         //     Ok(())
         // }
 
-        async fn list_peers(&self) -> anyhow::Result<Vec<crate::api::client::PeerInfo>> {
+        async fn list_peers(&self) -> anyhow::Result<Vec<crate::client::PeerInfo>> {
             Ok(vec![])
         }
 
-        async fn connect_to_peer(&self, _peer: crate::api::client::PeerInfo) -> anyhow::Result<()> {
+        async fn connect_to_peer(&self, _peer: crate::client::PeerInfo) -> anyhow::Result<()> {
             Ok(())
         }
 
@@ -411,7 +402,7 @@ mod tests {
         async fn send_raw_message(
             &self,
             _target: Uuid,
-            _message: crate::protocol::message::ActiveMessage,
+            _message: crate::handler::ActiveMessage,
         ) -> anyhow::Result<()> {
             Ok(())
         }

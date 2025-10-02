@@ -22,7 +22,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error};
 
 use crate::{
-    protocol::message::ActiveMessage,
+    handler::ActiveMessage,
     transport::{ThinTransport, TransportType},
 };
 

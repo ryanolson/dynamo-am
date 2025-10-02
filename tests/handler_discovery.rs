@@ -3,8 +3,10 @@
 
 use anyhow::Result;
 use dynamo_am::{
-    ActiveMessageManagerBuilder,
+    client::ActiveMessageClient,
     handler_impls::{AmContext, am_handler},
+    manager::ActiveMessageManager,
+    zmq::ZmqActiveMessageManager,
 };
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -20,11 +22,8 @@ async fn test_list_handlers_returns_registered_handlers() -> Result<()> {
     let cancel_token = CancellationToken::new();
 
     // Create manager which registers built-in system handlers
-    let manager = ActiveMessageManagerBuilder::new()
-        .endpoint("tcp://127.0.0.1:0".to_string())
-        .cancel_token(cancel_token.clone())
-        .build()
-        .await?;
+    let manager =
+        ZmqActiveMessageManager::new("tcp://127.0.0.1:0".to_string(), cancel_token.clone()).await?;
 
     // Register a custom handler
     let test_handler = am_handler(
@@ -72,17 +71,11 @@ async fn test_await_handler_succeeds_when_handler_exists() -> Result<()> {
 
     let cancel_token = CancellationToken::new();
 
-    let manager1 = ActiveMessageManagerBuilder::new()
-        .endpoint("tcp://127.0.0.1:0".to_string())
-        .cancel_token(cancel_token.clone())
-        .build()
-        .await?;
+    let manager1 =
+        ZmqActiveMessageManager::new("tcp://127.0.0.1:0".to_string(), cancel_token.clone()).await?;
 
-    let manager2 = ActiveMessageManagerBuilder::new()
-        .endpoint("tcp://127.0.0.1:0".to_string())
-        .cancel_token(cancel_token.clone())
-        .build()
-        .await?;
+    let manager2 =
+        ZmqActiveMessageManager::new("tcp://127.0.0.1:0".to_string(), cancel_token.clone()).await?;
 
     let client1 = manager1.client();
 
@@ -135,17 +128,11 @@ async fn test_await_handler_times_out_when_handler_missing() -> Result<()> {
 
     let cancel_token = CancellationToken::new();
 
-    let manager1 = ActiveMessageManagerBuilder::new()
-        .endpoint("tcp://127.0.0.1:0".to_string())
-        .cancel_token(cancel_token.clone())
-        .build()
-        .await?;
+    let manager1 =
+        ZmqActiveMessageManager::new("tcp://127.0.0.1:0".to_string(), cancel_token.clone()).await?;
 
-    let manager2 = ActiveMessageManagerBuilder::new()
-        .endpoint("tcp://127.0.0.1:0".to_string())
-        .cancel_token(cancel_token.clone())
-        .build()
-        .await?;
+    let manager2 =
+        ZmqActiveMessageManager::new("tcp://127.0.0.1:0".to_string(), cancel_token.clone()).await?;
 
     let client1 = manager1.client();
     let peer2_info = manager2.peer_info().await;
@@ -194,17 +181,11 @@ async fn test_await_handler_succeeds_after_registration() -> Result<()> {
 
     let cancel_token = CancellationToken::new();
 
-    let manager1 = ActiveMessageManagerBuilder::new()
-        .endpoint("tcp://127.0.0.1:0".to_string())
-        .cancel_token(cancel_token.clone())
-        .build()
-        .await?;
+    let manager1 =
+        ZmqActiveMessageManager::new("tcp://127.0.0.1:0".to_string(), cancel_token.clone()).await?;
 
-    let manager2 = ActiveMessageManagerBuilder::new()
-        .endpoint("tcp://127.0.0.1:0".to_string())
-        .cancel_token(cancel_token.clone())
-        .build()
-        .await?;
+    let manager2 =
+        ZmqActiveMessageManager::new("tcp://127.0.0.1:0".to_string(), cancel_token.clone()).await?;
 
     let client1 = manager1.client();
     let peer2_info = manager2.peer_info().await;
@@ -263,17 +244,11 @@ async fn test_list_handlers_via_active_message() -> Result<()> {
 
     let cancel_token = CancellationToken::new();
 
-    let manager1 = ActiveMessageManagerBuilder::new()
-        .endpoint("tcp://127.0.0.1:0".to_string())
-        .cancel_token(cancel_token.clone())
-        .build()
-        .await?;
+    let manager1 =
+        ZmqActiveMessageManager::new("tcp://127.0.0.1:0".to_string(), cancel_token.clone()).await?;
 
-    let manager2 = ActiveMessageManagerBuilder::new()
-        .endpoint("tcp://127.0.0.1:0".to_string())
-        .cancel_token(cancel_token.clone())
-        .build()
-        .await?;
+    let manager2 =
+        ZmqActiveMessageManager::new("tcp://127.0.0.1:0".to_string(), cancel_token.clone()).await?;
 
     let client1 = manager1.client();
     let peer2_info = manager2.peer_info().await;

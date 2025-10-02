@@ -12,17 +12,12 @@
 //! - Handles connection lifecycle and message delivery
 //! - Can be implemented for any underlying transport (ZMQ, TCP, HTTP, etc.)
 
-pub mod boxed;
-pub mod zmq;
-
-pub use boxed::{BoxedConnectionHandle, BoxedSender, BoxedTransport};
-
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
-use crate::protocol::message::{ActiveMessage, InstanceId};
+use super::handler::{ActiveMessage, InstanceId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportType {

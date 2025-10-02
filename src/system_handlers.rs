@@ -13,15 +13,14 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
-use crate::api::client::{ActiveMessageClient, PeerInfo};
-use crate::protocol::message::InstanceId;
-use crate::protocol::receipt::{ReceiptAck, ReceiptStatus};
-use crate::protocol::responses::{
+use super::client::{ActiveMessageClient, PeerInfo};
+use super::handler::InstanceId;
+use super::handler_impls::TypedUnaryHandler;
+use super::receipt_ack::{ReceiptAck, ReceiptStatus};
+use super::responses::{
     DiscoverResponse, HealthCheckResponse, ListHandlersResponse, RegisterServiceResponse,
     RemoveServiceResponse, RequestShutdownResponse, WaitForHandlerResponse,
 };
-
-use super::handler_impls::TypedUnaryHandler;
 
 // Note: System handlers now use the transport-agnostic cohort module
 // use crate::cohort::LeaderWorkerCohort; // Available if needed
@@ -606,7 +605,7 @@ mod tests {
         async fn send_raw_message(
             &self,
             _target: Uuid,
-            _message: crate::protocol::message::ActiveMessage,
+            _message: crate::handler::ActiveMessage,
         ) -> anyhow::Result<()> {
             Ok(())
         }

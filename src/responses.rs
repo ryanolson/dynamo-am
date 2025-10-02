@@ -33,6 +33,15 @@ pub struct HealthCheckResponse {
     pub timestamp: u64,
 }
 
+/// Response from the _join_cohort handler
+#[derive(Debug, Serialize, Deserialize)]
+pub struct JoinCohortResponse {
+    pub accepted: bool,
+    pub reason: Option<String>,
+    pub position: Option<usize>, // Position in cohort (may differ from rank)
+    pub expected_rank: Option<usize>, // The rank the worker should use
+}
+
 /// Response from the _remove_service handler
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RemoveServiceResponse {

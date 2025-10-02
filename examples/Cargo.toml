@@ -1,16 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-[workspace]
-
 [package]
 name = "active_message_example"
-version = "0.0.0"
-edition = "2024"
-authors = ["NVIDIA Inc. <sw-dl-dynamo@nvidia.com>"]
-license = "Apache-2.0"
-homepage = "https://github.com/ai-dynamo/dynamo"
-publish = false
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
 
 [dependencies]
 dynamo-am = { path = ".." }
@@ -27,5 +24,5 @@ tmq = "0.5"
 tokio = { version = "1.0", features = ["full"] }
 tokio-util = "0.7"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = "0.3"
 uuid = { version = "1.0", features = ["v4"] }

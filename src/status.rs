@@ -11,7 +11,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use crate::protocol::response::ResponseEnvelope;
+use super::response::ResponseEnvelope;
 
 /// TypeState marker: Default send-and-confirm mode
 #[derive(Debug)]

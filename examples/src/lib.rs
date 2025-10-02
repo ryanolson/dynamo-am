@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use dynamo_am::{
+use dynamo_runtime::active_message::{
     dispatcher::ActiveMessageDispatcher,
     handler_impls::{typed_unary_handler, TypedContext},
 };

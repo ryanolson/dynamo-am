@@ -15,8 +15,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::api::{builder::MessageBuilder, client::ActiveMessageClient};
-use crate::protocol::message::{ActiveMessage, InstanceId};
+use crate::{
+    builder::MessageBuilder, client::ActiveMessageClient, handler::ActiveMessage,
+    handler::InstanceId, protocol_v2::ControlMetadata,
+};
 
 /// Cohort-specific message builder that extends MessageBuilder with rank targeting
 pub struct CohortMessageBuilder<'a> {
@@ -348,11 +350,80 @@ impl LeaderWorkerCohort {
         self.validate_and_add_worker(worker_id, rank).await
     }
 
+    /// Register cohort-specific handlers (_join_cohort) with the dispatcher
+    /// This should only be called by leaders that manage cohorts
+    pub async fn register_handlers(
+        &self,
+        control_tx: &tokio::sync::mpsc::Sender<crate::dispatcher::ControlMessage>,
+        task_tracker: tokio_util::task::TaskTracker,
+    ) -> Result<()> {
+        use crate::handler_impls::{TypedContext, typed_unary_handler_with_tracker};
+        use crate::responses::JoinCohortResponse;
+
+        let cohort = self.clone();
+
+        // Create handler that captures THIS cohort instance
+        let handler = typed_unary_handler_with_tracker(
+            "_join_cohort".to_string(),
+            move |ctx: TypedContext<serde_json::Value>| {
+                let cohort = cohort.clone();
+                // Use block_in_place for async work in sync handler
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async move {
+                        // Parse rank from request
+                        let rank = ctx
+                            .input
+                            .get("rank")
+                            .and_then(|v| v.as_u64())
+                            .map(|r| r as usize);
+
+                        // Actually add worker to THIS specific cohort
+                        match cohort.add_worker(ctx.sender_id, rank).await {
+                            Ok(position) => {
+                                info!(
+                                    "Worker {} joined cohort at position {} with rank {:?}",
+                                    ctx.sender_id, position, rank
+                                );
+                                Ok(JoinCohortResponse {
+                                    accepted: true,
+                                    position: Some(position),
+                                    expected_rank: rank,
+                                    reason: None,
+                                })
+                            }
+                            Err(e) => {
+                                warn!("Worker {} failed to join cohort: {}", ctx.sender_id, e);
+                                Ok(JoinCohortResponse {
+                                    accepted: false,
+                                    position: None,
+                                    expected_rank: None,
+                                    reason: Some(e.to_string()),
+                                })
+                            }
+                        }
+                    })
+                })
+            },
+            task_tracker,
+        );
+
+        // Register with dispatcher
+        control_tx
+            .send(crate::dispatcher::ControlMessage::Register {
+                name: "_join_cohort".to_string(),
+                dispatcher: handler,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to register _join_cohort handler: {}", e))?;
+
+        Ok(())
+    }
+
     /// Connect to a worker and add it to the cohort
     /// This is a convenience method for leader-initiated cohort building
     pub async fn connect_and_add_worker(
         &self,
-        address: &crate::api::client::WorkerAddress,
+        address: &crate::client::WorkerAddress,
         rank: Option<usize>,
     ) -> Result<usize> {
         // Connect to worker
@@ -618,23 +689,22 @@ impl LeaderWorkerCohort {
             let ack_rx = client.register_ack(ack_id, timeout).await?;
             ack_receivers.push((worker_id, ack_rx));
 
-            let mut payload_with_ack = serde_json::from_slice::<serde_json::Value>(&payload)?;
-            if let serde_json::Value::Object(ref mut map) = payload_with_ack {
-                map.insert(
-                    "_ack_id".to_string(),
-                    serde_json::Value::String(ack_id.to_string()),
-                );
-            } else {
-                anyhow::bail!(
-                    "broadcast_acks requires JSON object payload, got: {}",
-                    payload_with_ack.to_string()
-                );
+            let mut control = ControlMetadata::fire_and_forget();
+            control.set_ack(ack_id);
+            if !client.has_incoming_connection_from(worker_id).await {
+                control.set_sender_endpoint(client.endpoint().to_string());
             }
 
-            let modified_payload = Bytes::from(serde_json::to_vec(&payload_with_ack)?);
-            client
-                .send_message(worker_id, handler, modified_payload)
-                .await?;
+            let message: crate::handler::ActiveMessage = crate::protocol_v2::ActiveMessage::new(
+                Uuid::new_v4(),
+                handler.to_string(),
+                client.instance_id(),
+                payload.clone(),
+                control,
+            )
+            .into();
+
+            client.send_raw_message(worker_id, message).await?;
         }
 
         for (worker_id, ack_rx) in ack_receivers {

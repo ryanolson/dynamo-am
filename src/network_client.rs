@@ -18,11 +18,10 @@ use tokio::sync::{RwLock, oneshot};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::api::client::{ActiveMessageClient, Endpoint, PeerInfo, WorkerAddress};
-use crate::protocol::message::{ActiveMessage, HandlerId, InstanceId};
-use crate::protocol::receipt::ReceiptAck;
-use crate::transport::boxed::{BoxedConnectionHandle, BoxedTransport};
-
+use super::boxed_transport::{BoxedConnectionHandle, BoxedTransport};
+use super::client::{ActiveMessageClient, Endpoint, PeerInfo, WorkerAddress};
+use super::handler::{ActiveMessage, HandlerId, InstanceId};
+use super::receipt_ack::ReceiptAck;
 use super::response_manager::SharedResponseManager;
 
 /// Internal state for the network client
@@ -213,7 +212,7 @@ impl ActiveMessageClient for NetworkClient {
     }
 
     async fn discover_peer(&self, endpoint: &str) -> Result<PeerInfo> {
-        use crate::protocol::responses::DiscoverResponse;
+        use super::responses::DiscoverResponse;
 
         debug!("Discovering peer at endpoint: {}", endpoint);
 
@@ -285,15 +284,14 @@ impl ActiveMessageClient for NetworkClient {
         let mut builder = self
             .system_active_message("_wait_for_handler")
             .payload(payload)?
-            .expect_response::<crate::protocol::responses::WaitForHandlerResponse>();
+            .expect_response::<super::responses::WaitForHandlerResponse>();
 
         if let Some(t) = timeout {
             builder = builder.timeout(t);
         }
 
         let status = builder.send(instance_id).await?;
-        let response: crate::protocol::responses::WaitForHandlerResponse =
-            status.await_response().await?;
+        let response: super::responses::WaitForHandlerResponse = status.await_response().await?;
         Ok(response.available)
     }
 
@@ -301,13 +299,12 @@ impl ActiveMessageClient for NetworkClient {
         debug!("list_handlers: Sending request to instance {}", instance_id);
         let status = self
             .system_active_message("_list_handlers")
-            .expect_response::<crate::protocol::responses::ListHandlersResponse>()
+            .expect_response::<super::responses::ListHandlersResponse>()
             .send(instance_id)
             .await?;
 
         debug!("list_handlers: Message sent, waiting for response");
-        let response: crate::protocol::responses::ListHandlersResponse =
-            status.await_response().await?;
+        let response: super::responses::ListHandlersResponse = status.await_response().await?;
         debug!(
             "list_handlers: Received response with {} handlers",
             response.handlers.len()

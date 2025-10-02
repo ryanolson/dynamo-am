@@ -17,7 +17,8 @@ use anyhow::Result;
 use dynamo_am::{
     client::ActiveMessageClient,
     handler_impls::{typed_unary_handler, TypedContext},
-    ActiveMessageManagerBuilder,
+    manager::ActiveMessageManager,
+    zmq::ZmqActiveMessageManager,
     MessageBuilder,
 };
 use serde::{Deserialize, Serialize};
@@ -53,17 +54,11 @@ async fn main() -> Result<()> {
     let cancel_token = CancellationToken::new();
 
     // Create two managers for request-response
-    let server_manager = ActiveMessageManagerBuilder::new()
-        .endpoint(unique_ipc_socket_path()?)
-        .cancel_token(cancel_token.clone())
-        .build()
-        .await?;
+    let server_manager =
+        ZmqActiveMessageManager::new(unique_ipc_socket_path()?, cancel_token.clone()).await?;
 
-    let client_manager = ActiveMessageManagerBuilder::new()
-        .endpoint(unique_ipc_socket_path()?)
-        .cancel_token(cancel_token.clone())
-        .build()
-        .await?;
+    let client_manager =
+        ZmqActiveMessageManager::new(unique_ipc_socket_path()?, cancel_token.clone()).await?;
 
     // Register hello world handler on server using typed unary handler
     let hello_handler =

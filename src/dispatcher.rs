@@ -18,11 +18,10 @@ use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::api::client::{ActiveMessageClient, PeerInfo};
-use crate::protocol::message::InstanceId;
-use crate::protocol::receipt::{
-    ClientExpectation, ContractInfo, HandlerType, ReceiptAck, ReceiptStatus,
-};
+use super::client::{ActiveMessageClient, PeerInfo};
+use super::handler::InstanceId;
+use super::receipt_ack::{ClientExpectation, ContractInfo, HandlerType, ReceiptAck, ReceiptStatus};
+use crate::protocol_v2::{ControlMetadata, DeliveryMode};
 
 /// A transport-agnostic active message for the dispatcher.
 #[derive(Debug, Clone)]
@@ -38,6 +37,9 @@ pub struct DispatchMessage {
 
     /// Sender identity information
     pub sender_identity: SenderIdentity,
+
+    /// Structured control metadata if available
+    pub control: Option<ControlMetadata>,
 
     /// Optional metadata (None for fastest path)
     pub metadata: Option<Bytes>,
@@ -106,11 +108,30 @@ pub enum DispatchMode {
 }
 
 /// Parsed metadata for response handling
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ParsedMetadata {
+    pub control: Option<ControlMetadata>,
     pub response_id: Option<Uuid>,
     pub receipt_id: Option<Uuid>,
     pub client_expectation: Option<ClientExpectation>,
+}
+
+impl ParsedMetadata {
+    fn from_control(control: ControlMetadata) -> Self {
+        let response_id = control.response.as_ref().map(|meta| meta.response_id);
+        let receipt_id = control.receipt.as_ref().map(|meta| meta.receipt_id);
+        let client_expectation = control
+            .receipt
+            .as_ref()
+            .map(|meta| meta.expectation.clone());
+
+        Self {
+            control: Some(control),
+            response_id,
+            receipt_id,
+            client_expectation,
+        }
+    }
 }
 
 /// Context passed to handlers during dispatch.
@@ -277,36 +298,31 @@ impl<H: ActiveMessageHandler + 'static> ActiveMessageDispatcher for SpawnedDispa
             }
 
             // Check if this is a with_response mode message that needs acceptance
-            if let Some(ref metadata_bytes) = ctx.message.metadata {
-                // Parse metadata as JSON
-                if let Ok(metadata) = serde_json::from_slice::<serde_json::Value>(metadata_bytes)
-                    && let Some(mode) = metadata.get("_mode").and_then(|v| v.as_str())
-                    && mode == "with_response"
+            if let Some(control) = ctx.parsed_metadata.control.as_ref()
+                && matches!(control.mode, DeliveryMode::WithResponse)
+                && let Some(accept_id) = control.accept_id
+            {
+                debug!("Sending acceptance for with_response message {}", accept_id);
+
+                let mut acceptance = ControlMetadata::fire_and_forget();
+                acceptance.set_acceptance(accept_id);
+
+                let accept_message: crate::handler::ActiveMessage =
+                    crate::protocol_v2::ActiveMessage::new(
+                        uuid::Uuid::new_v4(),
+                        "_accept".to_string(),
+                        ctx.client.instance_id(),
+                        bytes::Bytes::new(),
+                        acceptance,
+                    )
+                    .into();
+
+                if let Err(e) = ctx
+                    .client
+                    .send_raw_message(ctx.sender_address.instance_id(), accept_message)
+                    .await
                 {
-                    // Send acceptance message before processing
-                    if let Some(accept_id_str) = metadata.get("_accept_id").and_then(|v| v.as_str())
-                        && let Ok(accept_id) = uuid::Uuid::parse_str(accept_id_str)
-                    {
-                        debug!("Sending acceptance for with_response message {}", accept_id);
-
-                        let accept_message = crate::protocol::message::ActiveMessage {
-                            message_id: uuid::Uuid::new_v4(),
-                            handler_name: "_accept".to_string(),
-                            sender_instance: ctx.client.instance_id(),
-                            payload: bytes::Bytes::new(),
-                            metadata: serde_json::json!({
-                                "_accept_for": accept_id.to_string()
-                            }),
-                        };
-
-                        if let Err(e) = ctx
-                            .client
-                            .send_raw_message(ctx.sender_address.instance_id(), accept_message)
-                            .await
-                        {
-                            error!("Failed to send acceptance for {}: {}", accept_id, e);
-                        }
-                    }
+                    error!("Failed to send acceptance for {}: {}", accept_id, e);
                 }
             }
 
@@ -474,7 +490,18 @@ impl MessageDispatcher {
             let mut trace = MessageTrace::new(handler_name.clone(), message.received_at);
             trace.queued_at = Some(Instant::now());
             trace.payload_size = message.payload.len();
-            trace.metadata_size = message.metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+            trace.metadata_size = message
+                .metadata
+                .as_ref()
+                .map(|m| m.len())
+                .unwrap_or_else(|| {
+                    message
+                        .control
+                        .as_ref()
+                        .and_then(|c| c.to_bytes().ok())
+                        .map(|b| b.len())
+                        .unwrap_or(0)
+                });
             Some(Arc::new(RwLock::new(trace)))
         } else {
             None
@@ -514,42 +541,18 @@ impl MessageDispatcher {
         };
 
         // Parse metadata for response handling and receipt ACKs
-        let parsed_metadata = if let Some(ref meta_bytes) = message.metadata {
-            // Try to parse as JSON metadata
-            if let Ok(metadata_json) = serde_json::from_slice::<serde_json::Value>(meta_bytes) {
-                ParsedMetadata {
-                    response_id: metadata_json
-                        .get("response_id")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| Uuid::parse_str(s).ok()),
-                    receipt_id: metadata_json
-                        .get("_receipt_id")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| Uuid::parse_str(s).ok()),
-                    client_expectation: metadata_json
-                        .get("_client_expectation")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok()),
+        let parsed_metadata = if let Some(control) = message.control.clone() {
+            ParsedMetadata::from_control(control)
+        } else if let Some(ref meta_bytes) = message.metadata {
+            match ControlMetadata::from_bytes(meta_bytes) {
+                Ok(control) => ParsedMetadata::from_control(control),
+                Err(err) => {
+                    warn!("Failed to parse control metadata: {}", err);
+                    ParsedMetadata::default()
                 }
-            } else {
-                // Fall back to legacy ResponseMetadata parsing
-                serde_json::from_slice::<super::handler_impls::ResponseMetadata>(meta_bytes)
-                    .map(|meta| ParsedMetadata {
-                        response_id: meta.response_id,
-                        receipt_id: None,
-                        client_expectation: None,
-                    })
-                    .unwrap_or(ParsedMetadata {
-                        response_id: None,
-                        receipt_id: None,
-                        client_expectation: None,
-                    })
             }
         } else {
-            ParsedMetadata {
-                response_id: None,
-                receipt_id: None,
-                client_expectation: None,
-            }
+            ParsedMetadata::default()
         };
 
         // Contract validation for receipt ACK

@@ -18,7 +18,8 @@ use bytes::Bytes;
 use dynamo_am::{
     client::ActiveMessageClient,
     cohort::{CohortType, LeaderWorkerCohort},
-    ActiveMessageManagerBuilder,
+    manager::ActiveMessageManager,
+    zmq::ZmqActiveMessageManager,
 };
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -35,11 +36,9 @@ async fn main() -> Result<()> {
 
     let cancel_token = CancellationToken::new();
 
-    let manager = ActiveMessageManagerBuilder::new()
-        .endpoint("tcp://0.0.0.0:5555".to_string())
-        .cancel_token(cancel_token.clone())
-        .build()
-        .await?;
+    let manager =
+        ZmqActiveMessageManager::new("tcp://0.0.0.0:5555".to_string(), cancel_token.clone())
+            .await?;
 
     let client = manager.client();
 
@@ -52,29 +51,62 @@ async fn main() -> Result<()> {
         CohortType::FixedSize(2),
     ));
 
-    println!("Created cohort - leader-driven model");
-    println!("NOTE: In leader-driven mode, leader must manually add worker instance IDs");
-    println!("Example: Configure worker endpoints, connect to them, then call:");
-    println!("  cohort.add_worker(worker_instance_id, rank).await");
-    println!();
-    println!("For this example, we'll simulate by adding known worker IDs");
-    println!("In production, you would:");
-    println!("  1. Discover workers via service discovery or configuration");
-    println!("  2. Connect to each worker: client.connect_to_peer(worker_peer)");
-    println!("  3. Add to cohort: cohort.add_worker(worker.instance_id(), Some(rank))");
-    println!();
+    // Register cohort-specific handlers (_join_cohort) with THIS cohort instance
+    // This allows workers to join this specific cohort
+    let task_tracker = tokio_util::task::TaskTracker::new();
+    cohort
+        .register_handlers(manager.control_tx(), task_tracker)
+        .await?;
 
-    // In a real implementation, you would:
-    // 1. Get worker endpoints from config or service discovery
-    // 2. For each worker:
-    //    let worker_peer = PeerInfo::new(worker_id, worker_endpoint);
-    //    client.connect_to_peer(worker_peer).await?;
-    //    cohort.add_worker(worker_id, Some(rank)).await?;
-    // 3. Once cohort is full, proceed with work distribution
+    println!("Registered cohort handlers");
 
-    println!();
-    println!("Leader will now wait for shutdown signal...");
-    cancel_token.cancelled().await;
+    println!("Waiting for 2 workers to join cohort...");
+
+    // Wait for workers to join the cohort
+    let mut attempts = 0;
+    let max_attempts = 30; // 30 seconds with 1-second intervals
+
+    loop {
+        if cohort.is_full().await {
+            break;
+        }
+
+        attempts += 1;
+        if attempts >= max_attempts {
+            println!("Cohort not ready - timeout waiting for workers");
+            return Ok(());
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    println!("Cohort ready! Waiting for workers to register compute handler...");
+
+    // Wait for compute handler on all workers
+    let workers_ready = cohort
+        .await_handler_on_all_workers("compute", Some(Duration::from_secs(30)))
+        .await
+        .is_ok();
+
+    if !workers_ready {
+        println!("Workers do not have compute handler - skipping broadcast");
+    } else {
+        let request = ComputeRequest {
+            x: 10,
+            y: 20,
+            operation: "add".to_string(),
+        };
+
+        let payload = Bytes::from(serde_json::to_vec(&request)?);
+
+        println!("Broadcasting compute request to workers by rank");
+        cohort.broadcast_by_rank("compute", payload).await?;
+    }
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    println!("Leader initiating graceful shutdown...");
+    cohort.initiate_graceful_shutdown().await?;
 
     println!("Leader shutting down");
     manager.shutdown().await?;

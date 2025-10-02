@@ -17,7 +17,8 @@ use anyhow::Result;
 use dynamo_am::{
     client::{ActiveMessageClient, PeerInfo},
     handler_impls::{unary_handler, UnaryContext},
-    ActiveMessageManagerBuilder,
+    manager::ActiveMessageManager,
+    zmq::ZmqActiveMessageManager,
     MessageBuilder,
 };
 use std::time::{Duration, Instant};
@@ -45,17 +46,11 @@ async fn main() -> Result<()> {
     let cancel_token = CancellationToken::new();
 
     // Create two managers for ping-pong
-    let server_manager = ActiveMessageManagerBuilder::new()
-        .endpoint(unique_ipc_socket_path()?)
-        .cancel_token(cancel_token.clone())
-        .build()
-        .await?;
+    let server_manager =
+        ZmqActiveMessageManager::new(unique_ipc_socket_path()?, cancel_token.clone()).await?;
 
-    let client_manager = ActiveMessageManagerBuilder::new()
-        .endpoint(unique_ipc_socket_path()?)
-        .cancel_token(cancel_token.clone())
-        .build()
-        .await?;
+    let client_manager =
+        ZmqActiveMessageManager::new(unique_ipc_socket_path()?, cancel_token.clone()).await?;
 
     // Register ping handler on server using unary handler (sends ACK)
     let ping_handler = unary_handler("ping".to_string(), |ctx: UnaryContext| {
