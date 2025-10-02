@@ -436,10 +436,7 @@ where
 ///
 /// Returns an Arc<dyn ActiveMessageDispatcher> ready for registration.
 /// Creates its own TaskTracker for simplicity - use `am_handler_with_tracker` for production.
-pub fn am_handler<F, Fut>(
-    name: String,
-    f: F,
-) -> Arc<dyn crate::dispatcher::ActiveMessageDispatcher>
+pub fn am_handler<F, Fut>(name: String, f: F) -> Arc<dyn crate::dispatcher::ActiveMessageDispatcher>
 where
     F: Fn(AmContext) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<(), String>> + Send + Sync + 'static,
@@ -479,10 +476,7 @@ where
 ///
 /// Returns an Arc<dyn ActiveMessageDispatcher> ready for registration.
 /// Creates its own TaskTracker for simplicity - use `unary_handler_with_tracker` for production.
-pub fn unary_handler<F>(
-    name: String,
-    f: F,
-) -> Arc<dyn crate::dispatcher::ActiveMessageDispatcher>
+pub fn unary_handler<F>(name: String, f: F) -> Arc<dyn crate::dispatcher::ActiveMessageDispatcher>
 where
     F: Fn(UnaryContext) -> UnifiedResponse + Send + Sync + 'static,
 {

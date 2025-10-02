@@ -13,9 +13,7 @@ use uuid::Uuid;
 use super::builder::{MessageBuilder, NeedsDeliveryMode};
 use super::handler::{ActiveMessage, HandlerId, InstanceId};
 use super::receipt_ack::ReceiptAck;
-use super::responses::{
-    HealthCheckResponse, JoinCohortResponse, RegisterServiceResponse,
-};
+use super::responses::{HealthCheckResponse, JoinCohortResponse, RegisterServiceResponse};
 use super::utils::extract_host;
 
 /// Trait for types that can be converted to message payload bytes
@@ -154,10 +152,10 @@ impl PeerInfo {
     /// Get the best endpoint for connection based on local preferences
     pub fn select_endpoint(&self, my_endpoint: &str) -> Option<&Endpoint> {
         // Prefer IPC for same-host communication if available
-        if let Some(ref ipc_ep) = self.address.ipc_endpoint
-            && self.is_local(my_endpoint)
-        {
-            return Some(ipc_ep);
+        if let Some(ref ipc_ep) = self.address.ipc_endpoint {
+            if self.is_local(my_endpoint) {
+                return Some(ipc_ep);
+            }
         }
 
         // Fall back to TCP endpoint

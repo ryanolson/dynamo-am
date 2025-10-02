@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
-use tmq::{publish, subscribe, Context, Message, Multipart};
+use tmq::{Context, Message, Multipart, publish, subscribe};
 use tokio::sync::mpsc;
 use tracing::info;
 

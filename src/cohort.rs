@@ -16,9 +16,7 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::{
-    builder::MessageBuilder,
-    client::ActiveMessageClient,
-    handler::ActiveMessage,
+    builder::MessageBuilder, client::ActiveMessageClient, handler::ActiveMessage,
     handler::InstanceId,
 };
 
@@ -359,9 +357,7 @@ impl LeaderWorkerCohort {
         control_tx: &tokio::sync::mpsc::Sender<crate::dispatcher::ControlMessage>,
         task_tracker: tokio_util::task::TaskTracker,
     ) -> Result<()> {
-        use crate::handler_impls::{
-            TypedContext, typed_unary_handler_with_tracker,
-        };
+        use crate::handler_impls::{TypedContext, typed_unary_handler_with_tracker};
         use crate::responses::JoinCohortResponse;
 
         let cohort = self.clone();
@@ -413,12 +409,10 @@ impl LeaderWorkerCohort {
 
         // Register with dispatcher
         control_tx
-            .send(
-                crate::dispatcher::ControlMessage::Register {
-                    name: "_join_cohort".to_string(),
-                    dispatcher: handler,
-                },
-            )
+            .send(crate::dispatcher::ControlMessage::Register {
+                name: "_join_cohort".to_string(),
+                dispatcher: handler,
+            })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to register _join_cohort handler: {}", e))?;
 

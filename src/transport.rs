@@ -148,10 +148,10 @@ impl<WireFormat: Send + 'static> ConnectionHandle<WireFormat> {
         priorities.sort();
 
         for priority in priorities {
-            if let Some(sender) = self.alt_senders.get(&priority)
-                && sender.send(msg.clone()).await.is_ok()
-            {
-                return Ok(());
+            if let Some(sender) = self.alt_senders.get(&priority) {
+                if sender.send(msg.clone()).await.is_ok() {
+                    return Ok(());
+                }
             }
         }
 

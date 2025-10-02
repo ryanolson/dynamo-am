@@ -19,10 +19,7 @@ use crate::{
     response_manager::{ResponseManager, SharedResponseManager},
 };
 
-use super::{
-    discovery, thin_transport::ZmqThinTransport,
-    transport::ZmqTransport,
-};
+use super::{discovery, thin_transport::ZmqThinTransport, transport::ZmqTransport};
 
 /// Builder for ZmqActiveMessageManager with configurable options
 #[derive(Debug, Clone)]
@@ -73,6 +70,8 @@ pub struct ZmqActiveMessageManager {
     cancel_token: CancellationToken,
     receiver_task: Arc<Mutex<Option<tokio::task::JoinHandle<Result<()>>>>>,
     ack_cleanup_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    tcp_reader_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    ipc_reader_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     message_task_tracker: TaskTracker,
     message_router: MessageRouter,
 
@@ -176,8 +175,7 @@ impl ZmqActiveMessageManager {
 
         // Create thin ZMQ transport and wrap in BoxedTransport for type erasure
         let zmq_transport = Arc::new(ZmqThinTransport::new());
-        let boxed_transport =
-            crate::boxed_transport::BoxedTransport::new(zmq_transport);
+        let boxed_transport = crate::boxed_transport::BoxedTransport::new(zmq_transport);
 
         // Create NetworkClient (now concrete, no generics!)
         let client = Arc::new(NetworkClient::new(
@@ -227,6 +225,8 @@ impl ZmqActiveMessageManager {
             cancel_token: cancel_token.clone(),
             receiver_task: Arc::new(Mutex::new(None)),
             ack_cleanup_task: Arc::new(Mutex::new(None)),
+            tcp_reader_task: Arc::new(Mutex::new(None)),
+            ipc_reader_task: Arc::new(Mutex::new(None)),
             message_task_tracker,
             message_router,
             control_tx,
@@ -236,14 +236,14 @@ impl ZmqActiveMessageManager {
         manager.register_builtin_handlers().await?;
 
         // Spawn transport reader tasks for both TCP and IPC
-        let _tcp_reader_task = tokio::spawn(Self::transport_reader_task(
+        let tcp_reader_task = tokio::spawn(Self::transport_reader_task(
             tcp_transport,
             message_tx.clone(),
             cancel_token.clone(),
             "TCP".to_string(),
         ));
 
-        let _ipc_reader_task = tokio::spawn(Self::transport_reader_task(
+        let ipc_reader_task = tokio::spawn(Self::transport_reader_task(
             ipc_transport,
             message_tx,
             cancel_token.clone(),
@@ -265,9 +265,8 @@ impl ZmqActiveMessageManager {
         // Store the task handles
         *manager.receiver_task.lock().await = Some(receiver_task);
         *manager.ack_cleanup_task.lock().await = Some(ack_cleanup_task);
-
-        // Note: We're not storing tcp_reader_task and ipc_reader_task separately
-        // They will be cancelled when cancel_token is triggered
+        *manager.tcp_reader_task.lock().await = Some(tcp_reader_task);
+        *manager.ipc_reader_task.lock().await = Some(ipc_reader_task);
 
         Ok(manager)
     }
@@ -281,24 +280,35 @@ impl ZmqActiveMessageManager {
         debug!("Starting {} transport reader task", transport_name);
 
         loop {
+            // Check for cancellation first
+            if cancel_token.is_cancelled() {
+                debug!("{} transport reader task cancelled", transport_name);
+                break;
+            }
+
+            // Use a timeout on receive to allow periodic cancellation checks
             tokio::select! {
                 _ = cancel_token.cancelled() => {
                     debug!("{} transport reader task cancelled", transport_name);
                     break;
                 }
 
-                result = transport.receive() => {
+                result = tokio::time::timeout(Duration::from_millis(50), transport.receive()) => {
                     match result {
-                        Ok(message) => {
+                        Ok(Ok(message)) => {
                             debug!("Received message on {} transport", transport_name);
                             if message_tx.send(message).is_err() {
                                 debug!("{} transport reader: message channel closed", transport_name);
                                 break;
                             }
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             error!("Failed to receive message on {} transport: {}", transport_name, e);
                             break;
+                        }
+                        Err(_) => {
+                            // Timeout - loop around to check cancellation
+                            continue;
                         }
                     }
                 }
@@ -448,7 +458,22 @@ impl ActiveMessageManager for ZmqActiveMessageManager {
             warn!("Failed to send shutdown to dispatcher: {}", e);
         }
 
-        // Join background tasks first
+        // Join transport reader tasks first to ensure ZMQ sockets are closed
+        if let Some(tcp_reader_task) = self.tcp_reader_task.lock().await.take() {
+            debug!("Joining TCP reader task");
+            if let Err(e) = tcp_reader_task.await {
+                warn!("TCP reader task join error: {:?}", e);
+            }
+        }
+
+        if let Some(ipc_reader_task) = self.ipc_reader_task.lock().await.take() {
+            debug!("Joining IPC reader task");
+            if let Err(e) = ipc_reader_task.await {
+                warn!("IPC reader task join error: {:?}", e);
+            }
+        }
+
+        // Join background tasks
         if let Some(receiver_task) = self.receiver_task.lock().await.take() {
             debug!("Joining receiver task");
             if let Err(e) = receiver_task.await {
@@ -476,6 +501,28 @@ impl ActiveMessageManager for ZmqActiveMessageManager {
         debug!("Waiting for all message handlers to complete");
         self.message_task_tracker.close();
         self.message_task_tracker.wait().await;
+
+        // Disconnect all peer connections and clean up transport workers
+        debug!("Shutting down all peer connections");
+        self.client.shutdown_connections().await;
+
+        // Clean up IPC socket file
+        let state = self.state.read().await;
+        if let Some(ipc_endpoint) = &state.ipc_endpoint {
+            if let Some(socket_path) = ipc_endpoint.strip_prefix("ipc://") {
+                debug!("Cleaning up IPC socket file: {}", socket_path);
+                if let Err(e) = std::fs::remove_file(socket_path) {
+                    // Only warn if error is not "file not found"
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        warn!("Failed to remove IPC socket file {}: {}", socket_path, e);
+                    }
+                }
+            }
+        }
+        drop(state);
+
+        // Small delay to ensure all ZMQ cleanup completes
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         info!("ZmqActiveMessageManager shutdown complete");
         Ok(())

@@ -15,11 +15,11 @@
 
 use anyhow::Result;
 use dynamo_am::{
+    MessageBuilder,
     client::{ActiveMessageClient, PeerInfo},
-    handler_impls::{unary_handler, UnaryContext},
+    handler_impls::{UnaryContext, unary_handler},
     manager::ActiveMessageManager,
     zmq::ZmqActiveMessageManager,
-    MessageBuilder,
 };
 use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;

@@ -106,13 +106,19 @@ impl MessageRouter {
 
     /// Handle acceptance messages for pending requests
     async fn handle_acceptance(&self, message: ActiveMessage) -> Result<()> {
-        if let Some(accept_for_str) = message.metadata.get("_accept_for").and_then(|v| v.as_str())
-            && let Ok(accept_id) = Uuid::parse_str(accept_for_str)
-        {
-            self.response_manager.complete_acceptance(accept_id);
+        // Early return pattern with let-else
+        let Some(accept_for_str) = message.metadata.get("_accept_for").and_then(|v| v.as_str())
+        else {
+            error!("Invalid acceptance message: {:?}", message);
             return Ok(());
-        }
-        error!("Invalid acceptance message: {:?}", message);
+        };
+
+        let Ok(accept_id) = Uuid::parse_str(accept_for_str) else {
+            error!("Invalid acceptance message: {:?}", message);
+            return Ok(());
+        };
+
+        self.response_manager.complete_acceptance(accept_id);
         Ok(())
     }
 
@@ -178,71 +184,72 @@ impl MessageRouter {
 
     /// Handle legacy v1 response messages
     async fn handle_response(&self, message: ActiveMessage) -> Result<()> {
-        if let Some(response_to_str) = message
+        // Early return pattern
+        let Some(response_to_str) = message
             .metadata
             .get("_response_to")
             .and_then(|v| v.as_str())
-            && let Ok(response_id) = Uuid::parse_str(response_to_str)
-        {
-            debug!(
-                "Handling legacy response to {} from {}",
-                response_id, message.sender_instance
-            );
+        else {
+            error!("Invalid response message: {:?}", message);
+            return Ok(());
+        };
 
-            // Try to parse the payload as JSON to determine if it's an ACK/NACK or full response
-            if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&message.payload) {
-                // Check if this is an ACK/NACK message based on the status field
-                if let Some(status) = json_value.get("status").and_then(|s| s.as_str()) {
-                    match status {
-                        "ok" => {
-                            // This is an ACK - complete it as an ACK
-                            debug!("Routing ACK response {} to complete_ack", response_id);
-                            self.response_manager.complete_ack(response_id, Ok(()));
-                            return Ok(());
-                        }
-                        "error" => {
-                            // This is a NACK - extract error message and complete as NACK
-                            let error_msg = json_value
-                                .get("message")
-                                .and_then(|m| m.as_str())
-                                .unwrap_or("Unknown error")
-                                .to_string();
-                            debug!(
-                                "Routing NACK response {} to complete_nack: {}",
-                                response_id, error_msg
-                            );
-                            self.response_manager
-                                .complete_ack(response_id, Err(error_msg));
-                            return Ok(());
-                        }
-                        _ => {
-                            // Unknown status, treat as full response
-                            debug!(
-                                "Unknown status '{}' in response {}, treating as full response",
-                                status, response_id
-                            );
-                        }
+        let Ok(response_id) = Uuid::parse_str(response_to_str) else {
+            error!("Invalid response message: {:?}", message);
+            return Ok(());
+        };
+
+        debug!(
+            "Handling legacy response to {} from {}",
+            response_id, message.sender_instance
+        );
+
+        // Try to parse the payload as JSON to determine if it's an ACK/NACK or full response
+        if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&message.payload) {
+            // Check if this is an ACK/NACK message based on the status field
+            if let Some(status) = json_value.get("status").and_then(|s| s.as_str()) {
+                match status {
+                    "ok" => {
+                        debug!("Routing ACK response {} to complete_ack", response_id);
+                        self.response_manager.complete_ack(response_id, Ok(()));
+                        return Ok(());
+                    }
+                    "error" => {
+                        let error_msg = json_value
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("Unknown error")
+                            .to_string();
+                        debug!(
+                            "Routing NACK response {} to complete_nack: {}",
+                            response_id, error_msg
+                        );
+                        self.response_manager
+                            .complete_ack(response_id, Err(error_msg));
+                        return Ok(());
+                    }
+                    _ => {
+                        debug!(
+                            "Unknown status '{}' in response {}, treating as full response",
+                            status, response_id
+                        );
                     }
                 }
-                // JSON but no status field - this is a full response
-                debug!(
-                    "Routing full JSON response {} to complete_response",
-                    response_id
-                );
-            } else {
-                // Not JSON - definitely a full response
-                debug!(
-                    "Routing non-JSON response {} to complete_response",
-                    response_id
-                );
             }
-
-            // Not an ACK/NACK or couldn't parse as JSON - treat as full response
-            self.response_manager
-                .complete_response(response_id, message.payload);
-            return Ok(());
+            debug!(
+                "Routing full JSON response {} to complete_response",
+                response_id
+            );
+        } else {
+            debug!(
+                "Routing non-JSON response {} to complete_response",
+                response_id
+            );
         }
-        error!("Invalid response message: {:?}", message);
+
+        // Not an ACK/NACK or couldn't parse as JSON - treat as full response
+        self.response_manager
+            .complete_response(response_id, message.payload);
         Ok(())
     }
 
@@ -264,10 +271,7 @@ impl MessageRouter {
                     .get("_sender_endpoint")
                     .and_then(|v| v.as_str())
                 {
-                    let peer_info = crate::client::PeerInfo::new(
-                        message.sender_instance,
-                        endpoint,
-                    );
+                    let peer_info = crate::client::PeerInfo::new(message.sender_instance, endpoint);
                     SenderIdentity::Unknown(peer_info)
                 } else {
                     // No endpoint available, treat as anonymous
@@ -317,10 +321,7 @@ impl MessageRouter {
                     .get("_sender_endpoint")
                     .and_then(|v| v.as_str())
                 {
-                    let peer_info = crate::client::PeerInfo::new(
-                        message.sender_instance,
-                        endpoint,
-                    );
+                    let peer_info = crate::client::PeerInfo::new(message.sender_instance, endpoint);
 
                     if let Err(e) = self.client.connect_to_peer(peer_info.clone()).await {
                         warn!(
@@ -349,8 +350,8 @@ impl MessageRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use bytes::Bytes;
+    use std::sync::Arc;
     use tokio::sync::mpsc;
     use uuid::Uuid;
 
@@ -392,10 +393,7 @@ mod tests {
             Ok(vec![])
         }
 
-        async fn connect_to_peer(
-            &self,
-            _peer: crate::client::PeerInfo,
-        ) -> anyhow::Result<()> {
+        async fn connect_to_peer(&self, _peer: crate::client::PeerInfo) -> anyhow::Result<()> {
             Ok(())
         }
 
@@ -454,9 +452,7 @@ mod tests {
             _receipt_id: Uuid,
             _timeout: std::time::Duration,
         ) -> anyhow::Result<
-            tokio::sync::oneshot::Receiver<
-                Result<crate::receipt_ack::ReceiptAck, String>,
-            >,
+            tokio::sync::oneshot::Receiver<Result<crate::receipt_ack::ReceiptAck, String>>,
         > {
             let (_tx, rx) = tokio::sync::oneshot::channel();
             Ok(rx)

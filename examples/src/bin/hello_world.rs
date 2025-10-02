@@ -15,11 +15,11 @@
 
 use anyhow::Result;
 use dynamo_am::{
+    MessageBuilder,
     client::ActiveMessageClient,
-    handler_impls::{typed_unary_handler, TypedContext},
+    handler_impls::{TypedContext, typed_unary_handler},
     manager::ActiveMessageManager,
     zmq::ZmqActiveMessageManager,
-    MessageBuilder,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;

@@ -255,6 +255,35 @@ impl<H: ActiveMessageHandler> SpawnedDispatcher<H> {
             task_tracker,
         }
     }
+
+    /// Helper to send acceptance for with_response messages
+    async fn maybe_send_acceptance(ctx: &DispatchContext) {
+        // Early return pattern - much cleaner than nested ifs
+        let Some(ref metadata_bytes) = ctx.message.metadata else { return };
+        let Ok(metadata) = serde_json::from_slice::<serde_json::Value>(metadata_bytes) else { return };
+        let Some(mode) = metadata.get("_mode").and_then(|v| v.as_str()) else { return };
+        if mode != "with_response" { return }
+        let Some(accept_id_str) = metadata.get("_accept_id").and_then(|v| v.as_str()) else { return };
+        let Ok(accept_id) = uuid::Uuid::parse_str(accept_id_str) else { return };
+        debug!("Sending acceptance for with_response message {}", accept_id);
+        let accept_message = crate::handler::ActiveMessage {
+            message_id: uuid::Uuid::new_v4(),
+            handler_name: "_accept".to_string(),
+            sender_instance: ctx.client.instance_id(),
+            payload: bytes::Bytes::new(),
+            metadata: serde_json::json!({
+                "_accept_for": accept_id.to_string()
+            }),
+        };
+
+        if let Err(e) = ctx
+            .client
+            .send_raw_message(ctx.sender_address.instance_id(), accept_message)
+            .await
+        {
+            error!("Failed to send acceptance for {}: {}", accept_id, e);
+        }
+    }
 }
 
 #[async_trait]
@@ -275,38 +304,7 @@ impl<H: ActiveMessageHandler + 'static> ActiveMessageDispatcher for SpawnedDispa
             }
 
             // Check if this is a with_response mode message that needs acceptance
-            if let Some(ref metadata_bytes) = ctx.message.metadata {
-                // Parse metadata as JSON
-                if let Ok(metadata) = serde_json::from_slice::<serde_json::Value>(metadata_bytes)
-                    && let Some(mode) = metadata.get("_mode").and_then(|v| v.as_str())
-                    && mode == "with_response"
-                {
-                    // Send acceptance message before processing
-                    if let Some(accept_id_str) = metadata.get("_accept_id").and_then(|v| v.as_str())
-                        && let Ok(accept_id) = uuid::Uuid::parse_str(accept_id_str)
-                    {
-                        debug!("Sending acceptance for with_response message {}", accept_id);
-
-                        let accept_message = crate::handler::ActiveMessage {
-                            message_id: uuid::Uuid::new_v4(),
-                            handler_name: "_accept".to_string(),
-                            sender_instance: ctx.client.instance_id(),
-                            payload: bytes::Bytes::new(),
-                            metadata: serde_json::json!({
-                                "_accept_for": accept_id.to_string()
-                            }),
-                        };
-
-                        if let Err(e) = ctx
-                            .client
-                            .send_raw_message(ctx.sender_address.instance_id(), accept_message)
-                            .await
-                        {
-                            error!("Failed to send acceptance for {}: {}", accept_id, e);
-                        }
-                    }
-                }
-            }
+            Self::maybe_send_acceptance(&ctx).await;
 
             // Execute handler (active message semantics)
             handler
@@ -629,11 +627,11 @@ impl MessageDispatcher {
         dispatcher.dispatch(ctx).await;
 
         // Send trace to metrics collector if enabled
-        if let Some(ref trace) = trace
-            && let Some(ref tx) = self.metrics_tx
-        {
-            let trace_data = trace.read().await.clone();
-            let _ = tx.send(trace_data).await;
+        if let Some(ref trace) = trace {
+            if let Some(ref tx) = self.metrics_tx {
+                let trace_data = trace.read().await.clone();
+                let _ = tx.send(trace_data).await;
+            }
         }
     }
 
