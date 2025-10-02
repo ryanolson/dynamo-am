@@ -3,6 +3,8 @@
 
 [package]
 name = "active_message_example"
+version = "0.0.0"
+edition = "2024"
 
 [dependencies]
 dynamo-am = { path = ".." }
