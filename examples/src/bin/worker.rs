@@ -19,8 +19,10 @@
 
 use anyhow::Result;
 use dynamo_am::{
-    client::{ActiveMessageClient, PeerInfo},
+    client::{ActiveMessageClient, WorkerAddress},
+    handler_impls::{typed_unary_handler, TypedContext},
     manager::ActiveMessageManager,
+    responses::RequestShutdownResponse,
     zmq::ZmqActiveMessageManager,
 };
 use std::env;
@@ -63,15 +65,29 @@ async fn main() -> Result<()> {
 
     println!("Registered compute handler");
 
-    // Discover leader instance ID (in real usage, this might be configured differently)
-    let leader_instance_id = uuid::Uuid::new_v4();
-    let leader_peer = PeerInfo::new(leader_instance_id, leader_endpoint.clone());
+    // Register custom shutdown handler that actually triggers shutdown
+    let shutdown_token = cancel_token.clone();
+    let shutdown_handler = typed_unary_handler(
+        "_request_shutdown".to_string(),
+        move |ctx: TypedContext<serde_json::Value>| {
+            println!("Received shutdown request from leader: {:?}", ctx.input);
+            // Cancel the token to trigger graceful shutdown
+            shutdown_token.cancel();
+            Ok(RequestShutdownResponse { acknowledged: true })
+        },
+    );
+    manager
+        .register_handler("_request_shutdown".to_string(), shutdown_handler)
+        .await?;
 
-    client.connect_to_peer(leader_peer).await?;
+    // Connect to leader using address-based discovery
+    let leader_address = WorkerAddress::tcp(leader_endpoint.clone());
+    let leader_peer = client.connect_to_address(&leader_address).await?;
+    let leader_instance_id = leader_peer.instance_id;
 
-    println!("Connected to leader at {}", leader_endpoint);
+    println!("Connected to leader at {} (instance: {})", leader_endpoint, leader_instance_id);
 
-    // Join cohort with optional rank - now works directly on concrete client!
+    // Join cohort with optional rank
     match client.join_cohort(leader_instance_id, worker_rank).await {
         Ok(response) => {
             if response.accepted {
