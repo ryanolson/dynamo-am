@@ -2,43 +2,7 @@
 
 ## Phase 1: Quick Wins (No Breaking Changes)
 
-### 1. Fix Response Type Discrimination
-**Status:** TODO
-**Branch:** `ryan/perf-response-type-discrimination`
-**Priority:** P0 - Critical (fixes double JSON parsing)
-
-**Problem:**
-- Response messages embed type info in JSON payload (`status: "ok"/"error"`)
-- Receiver must parse JSON to determine if it's ACK/NACK/Response
-- This causes double parsing: once to check type, again to get data
-
-**Current Flow:**
-```rust
-// Server sends (client.rs:388-450):
-{"response_id": "...", "status": "ok"}  // ACK
-{"response_id": "...", "status": "error", "message": "..."}  // NACK
-
-// Client receives (message_router.rs:129):
-if let Ok(json_value) = serde_json::from_slice(&message.payload) {
-    if let Some(status) = json_value.get("status") { ... }  // Parse #1
-}
-// Handler parses again for actual data  // Parse #2
-```
-
-**Solution:**
-Add `response_type` field to `ControlMetadata` to discriminate at metadata level, not payload level.
-
-**Files to Change:**
-- [ ] `lib/am/src/api/control.rs` - Add ResponseType enum to ControlMetadata
-- [ ] `lib/am/src/api/client.rs` - Set response_type when sending ACK/NACK/Response
-- [ ] `lib/am/src/runtime/message_router.rs` - Check metadata instead of parsing payload
-- [ ] Tests to verify no regression
-
-**Impact:** Both client and server (protocol change, but backwards compatible if optional)
-
----
-
-### 2. Remove Metrics Serialization Overhead
+### 1. Remove Metrics Serialization Overhead
 **Status:** TODO
 **Branch:** `ryan/perf-metrics-overhead`
 **Priority:** P1 - High (wasteful CPU usage)
@@ -126,9 +90,9 @@ For each optimization:
 
 ## Current Status
 
-- [ ] Phase 1.1: Response Type Discrimination
+- [x] Phase 1.1: Response Type Discrimination (COMPLETED on branch `ryan/perf-response-type-discrimination`)
 - [ ] Phase 1.2: Metrics Overhead
 - [ ] Phase 1.3: Zero-Copy Bytes
 - [ ] Phase 1.4: Auto-Registration Cache
 
-**Next:** Start with Phase 1.1 (highest priority, biggest impact)
+**Next:** Phase 1.2 - Remove Metrics Serialization Overhead

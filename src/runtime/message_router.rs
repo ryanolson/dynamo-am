@@ -112,12 +112,20 @@ impl MessageRouter {
     }
 
     /// Handle unified response messages (with metadata-based routing)
+    ///
+    /// This method implements two routing strategies:
+    /// 1. **FAST PATH**: Uses `response_type` metadata field (zero JSON parsing for ACK/Response)
+    /// 2. **LEGACY PATH**: Falls back to JSON payload parsing for backward compatibility
+    ///
+    /// The fast path is taken when `control.response_type` is present (new protocol).
+    /// The legacy path is taken when `response_type` is None (old clients/servers).
     async fn handle_response_unified(
         &self,
         response_ctx: ResponseContextMetadata,
         message: ActiveMessage,
     ) -> Result<()> {
         let response_id = response_ctx.response_to;
+        let control = &message.control;
 
         debug!(
             "Handling v2 response to {} from {}",
@@ -125,7 +133,65 @@ impl MessageRouter {
         );
         debug!("Response payload size: {} bytes", message.payload.len());
 
-        // Try to parse the payload as JSON to determine if it's an ACK/NACK or full response
+        // ============================================================================
+        // FAST PATH: Metadata-based response type discrimination (NEW PROTOCOL)
+        // ============================================================================
+        // This path is taken when the sender includes `response_type` in metadata.
+        // It eliminates JSON parsing for ACK (0 parses) and Response (0 parses in router).
+        // For NACK, error message is also in metadata, avoiding JSON parse entirely.
+        if let Some(response_type) = control.response_type() {
+            use crate::api::control::ResponseType;
+            debug!("Using metadata response_type: {:?}", response_type);
+
+            match response_type {
+                ResponseType::Ack => {
+                    debug!("Completing as ACK (from metadata)");
+                    self.response_manager.complete_ack(response_id, Ok(()));
+                    return Ok(());
+                }
+                ResponseType::Nack => {
+                    // NEW: Read error message from metadata (zero parse!)
+                    let error_msg = response_ctx.error_message.clone().unwrap_or_else(|| {
+                        // Fallback: parse JSON for legacy messages without error_message in metadata
+                        debug!(
+                            "NACK missing error_message in metadata, falling back to JSON parse"
+                        );
+                        if let Ok(json_value) =
+                            serde_json::from_slice::<serde_json::Value>(&message.payload)
+                        {
+                            json_value
+                                .get("message")
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("Unknown error")
+                                .to_string()
+                        } else {
+                            "Unknown error".to_string()
+                        }
+                    });
+                    debug!("Completing as NACK (from metadata): {}", error_msg);
+                    self.response_manager
+                        .complete_ack(response_id, Err(error_msg));
+                    return Ok(());
+                }
+                ResponseType::Response => {
+                    debug!(
+                        "Completing as full response (from metadata) with {} bytes",
+                        message.payload.len()
+                    );
+                    self.response_manager
+                        .complete_response(response_id, message.payload);
+                    return Ok(());
+                }
+            }
+        }
+
+        // ============================================================================
+        // LEGACY PATH: JSON payload parsing for backward compatibility (OLD PROTOCOL)
+        // ============================================================================
+        // This path is taken when `response_type` is not present in metadata.
+        // It maintains compatibility with old clients/servers that don't set the field.
+        // Performance: Requires JSON parsing to check for "status" field in payload.
+        debug!("No response_type in metadata, falling back to JSON parsing");
         if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&message.payload) {
             debug!("Parsed response as JSON: {:?}", json_value);
             if let Some(status) = json_value.get("status").and_then(|s| s.as_str()) {

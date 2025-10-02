@@ -15,7 +15,7 @@ pub use api::{
     client::{ActiveMessageClient, PeerInfo, WorkerAddress},
     control::{
         AcceptanceMetadata, AckMetadata, ControlMetadata, DeliveryMode, ReceiptMetadata,
-        ResponseContextMetadata, ResponseMetadata, TransportHints,
+        ResponseContextMetadata, ResponseMetadata, ResponseType, TransportHints,
     },
     handler::{ActiveMessageContext, HandlerEvent, InstanceId},
     message::ActiveMessage,
