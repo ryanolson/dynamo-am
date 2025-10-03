@@ -469,10 +469,7 @@ pub async fn register_system_handlers(
                     tokio::select! {
                         _ = cancel_token.cancelled() => {
                             tracing::debug!("_wait_for_handler cancelled during shutdown");
-                            return Ok(WaitForHandlerResponse {
-                                handler_name,
-                                available: false,
-                            });
+                            return Err("Handler cancelled during shutdown".to_string());
                         }
                         _ = tokio::time::sleep(Duration::from_millis(0)) => {
                             // Continue with handler query
@@ -511,10 +508,7 @@ pub async fn register_system_handlers(
                     tokio::select! {
                         _ = cancel_token.cancelled() => {
                             tracing::debug!("_wait_for_handler cancelled during sleep");
-                            return Ok(WaitForHandlerResponse {
-                                handler_name,
-                                available: false,
-                            });
+                            return Err("Handler cancelled during shutdown".to_string());
                         }
                         _ = tokio::time::sleep(Duration::from_millis(100)) => {
                             // Continue polling
