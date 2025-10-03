@@ -1,0 +1,15 @@
+name: Copyright Checks
+
+on:
+  pull_request:
+
+jobs:
+  copyright-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run copyright check
+        run: pwsh .github/workflows/copyright-check.ps1
+        timeout-minutes: 2
