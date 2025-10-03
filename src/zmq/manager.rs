@@ -143,6 +143,10 @@ impl ZmqActiveMessageManager {
         cancel_token: CancellationToken,
         _builder: ZmqActiveMessageManagerBuilder,
     ) -> Result<Self> {
+        // Create a child token so the manager can independently cancel on shutdown
+        // while still respecting cancellation from the parent token
+        let internal_cancel_token = cancel_token.child_token();
+
         let instance_id = InstanceId::new_v4();
 
         let context = tmq::Context::new();
@@ -222,7 +226,7 @@ impl ZmqActiveMessageManager {
             state: state.clone(),
             client: client.clone(),
             handler_events_tx: handler_events_tx.clone(),
-            cancel_token: cancel_token.clone(),
+            cancel_token: internal_cancel_token,
             receiver_task: Arc::new(Mutex::new(None)),
             ack_cleanup_task: Arc::new(Mutex::new(None)),
             message_task_tracker,
@@ -240,27 +244,27 @@ impl ZmqActiveMessageManager {
         let _tcp_reader_task = tokio::spawn(Self::transport_reader_task(
             tcp_transport,
             message_tx.clone(),
-            cancel_token.clone(),
+            manager.cancel_token.clone(),
             "TCP".to_string(),
         ));
 
         let _ipc_reader_task = tokio::spawn(Self::transport_reader_task(
             ipc_transport,
             message_tx,
-            cancel_token.clone(),
+            manager.cancel_token.clone(),
             "IPC".to_string(),
         ));
 
         // Spawn main receive loop that reads from merged channel
         let receiver_task = tokio::spawn(Self::receive_loop(
             message_rx,
-            cancel_token.clone(),
+            manager.cancel_token.clone(),
             manager.message_router.clone(),
         ));
 
         let ack_cleanup_task = tokio::spawn(Self::ack_cleanup_loop(
             response_manager.clone(),
-            cancel_token.clone(),
+            manager.cancel_token.clone(),
         ));
 
         // Store the task handles
