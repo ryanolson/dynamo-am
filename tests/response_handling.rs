@@ -210,6 +210,7 @@ async fn test_response_with_payload() -> Result<()> {
         .active_message("echo_test")?
         .payload(&request)?
         .expect_response::<EchoResponse>()
+        .timeout(Duration::from_secs(5))
         .send(peer2_info.instance_id)
         .await?;
 
@@ -333,6 +334,7 @@ async fn test_concurrent_mixed_responses() -> Result<()> {
             client
                 .active_message("ack_handler")
                 .unwrap()
+                .timeout(Duration::from_secs(5))
                 .send(peer_id)
                 .await
         })
@@ -348,6 +350,7 @@ async fn test_concurrent_mixed_responses() -> Result<()> {
                 .payload("test".to_string())
                 .unwrap()
                 .expect_response::<String>()
+                .timeout(Duration::from_secs(5))
                 .send(peer_id)
                 .await
                 .unwrap()
@@ -366,6 +369,7 @@ async fn test_concurrent_mixed_responses() -> Result<()> {
                 .payload("hello".to_string())
                 .unwrap()
                 .expect_response::<String>()
+                .timeout(Duration::from_secs(5))
                 .send(peer_id)
                 .await
                 .unwrap()
