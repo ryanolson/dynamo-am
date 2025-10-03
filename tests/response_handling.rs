@@ -349,7 +349,7 @@ async fn test_concurrent_mixed_responses() -> Result<()> {
             client
                 .active_message("error_handler")
                 .unwrap()
-                .payload(&"test".to_string())
+                .payload("test".to_string())
                 .unwrap()
                 .expect_response::<String>()
                 .send(peer_id)
@@ -367,7 +367,7 @@ async fn test_concurrent_mixed_responses() -> Result<()> {
             client
                 .active_message("echo_handler")
                 .unwrap()
-                .payload(&"hello".to_string())
+                .payload("hello".to_string())
                 .unwrap()
                 .expect_response::<String>()
                 .send(peer_id)
