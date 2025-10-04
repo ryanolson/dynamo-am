@@ -444,7 +444,7 @@ pub async fn register_system_handlers(
         "_wait_for_handler".to_string(),
         move |ctx: super::handler_impls::TypedContext<serde_json::Value>| {
             let control_tx = control_tx_for_wait.clone();
-            let cancel_token = cancel_token_for_wait.clone();
+            let _cancel_token = cancel_token_for_wait.clone();
             async move {
                 // Parse handler name and timeout from input
                 let handler_name = ctx
@@ -461,23 +461,14 @@ pub async fn register_system_handlers(
                     .map(Duration::from_millis);
 
                 // Poll for handler with timeout
+                // Use 90% of client timeout to ensure we respond before client gives up
                 let start = std::time::Instant::now();
-                let max_wait = timeout_ms.unwrap_or(Duration::from_secs(30));
+                let max_wait = timeout_ms
+                    .map(|t| t.mul_f32(0.9))
+                    .unwrap_or(Duration::from_secs(30));
 
                 loop {
-                    // Check for cancellation first
-                    tokio::select! {
-                        _ = cancel_token.cancelled() => {
-                            tracing::debug!("_wait_for_handler cancelled during shutdown");
-                            return Ok(WaitForHandlerResponse {
-                                handler_name,
-                                available: false,
-                            });
-                        }
-                        _ = tokio::time::sleep(Duration::from_millis(0)) => {
-                            // Continue with handler query
-                        }
-                    }
+                    tracing::debug!("_wait_for_handler polling for handler '{}'", handler_name);
 
                     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                     let control_msg = super::dispatcher::ControlMessage::QueryHandler {
@@ -485,13 +476,84 @@ pub async fn register_system_handlers(
                         reply_tx,
                     };
 
-                    control_tx.send(control_msg).await.map_err(|e| {
-                        format!("Failed to send QueryHandler control message: {}", e)
-                    })?;
+                    tracing::debug!("_wait_for_handler about to send QueryHandler");
 
-                    let exists = reply_rx
-                        .await
-                        .map_err(|e| format!("Failed to receive handler query result: {}", e))?;
+                    // Check for cancellation before sending
+                    if _cancel_token.is_cancelled() {
+                        tracing::debug!("_wait_for_handler cancelled before sending query");
+                        return Ok(WaitForHandlerResponse {
+                            handler_name,
+                            available: false,
+                        });
+                    }
+
+                    // Send QueryHandler with timeout - if this fails or times out, dispatcher has shut down
+                    let send_timeout = tokio::time::timeout(
+                        Duration::from_millis(100),
+                        control_tx.send(control_msg),
+                    )
+                    .await;
+
+                    match send_timeout {
+                        Ok(Ok(())) => {
+                            tracing::debug!("_wait_for_handler sent QueryHandler successfully");
+                        }
+                        Ok(Err(_)) => {
+                            // Dispatcher channel closed
+                            tracing::debug!("_wait_for_handler: dispatcher channel closed");
+                            return Ok(WaitForHandlerResponse {
+                                handler_name,
+                                available: false,
+                            });
+                        }
+                        Err(_) => {
+                            // Timeout - dispatcher not processing messages
+                            tracing::debug!("_wait_for_handler: timeout sending QueryHandler");
+                            return Ok(WaitForHandlerResponse {
+                                handler_name,
+                                available: false,
+                            });
+                        }
+                    }
+
+                    tracing::debug!("_wait_for_handler waiting for reply");
+
+                    // Wait for reply with timeout and cancellation
+                    // Create the cancelled future outside select! to ensure it's properly polled
+                    let mut cancelled_fut = std::pin::pin!(_cancel_token.cancelled());
+                    let mut timeout_fut =
+                        std::pin::pin!(tokio::time::timeout(Duration::from_millis(200), reply_rx));
+
+                    let reply_result = tokio::select! {
+                        _ = &mut cancelled_fut => {
+                            tracing::debug!("_wait_for_handler cancelled while waiting for reply");
+                            return Ok(WaitForHandlerResponse {
+                                handler_name,
+                                available: false,
+                            });
+                        }
+                        result = &mut timeout_fut => result
+                    };
+
+                    let exists = match reply_result {
+                        Ok(Ok(exists)) => exists,
+                        Ok(Err(_)) => {
+                            // Timeout waiting for reply
+                            tracing::debug!("_wait_for_handler: timeout waiting for reply");
+                            return Ok(WaitForHandlerResponse {
+                                handler_name,
+                                available: false,
+                            });
+                        }
+                        Err(_) => {
+                            // Reply channel closed without sending
+                            tracing::debug!("_wait_for_handler: reply channel closed");
+                            return Ok(WaitForHandlerResponse {
+                                handler_name,
+                                available: false,
+                            });
+                        }
+                    };
 
                     if exists {
                         return Ok(WaitForHandlerResponse {
@@ -507,9 +569,9 @@ pub async fn register_system_handlers(
                         });
                     }
 
-                    // Wait a bit before polling again, also checking for cancellation
+                    // Wait a bit before polling again, checking for cancellation
                     tokio::select! {
-                        _ = cancel_token.cancelled() => {
+                        _ = _cancel_token.cancelled() => {
                             tracing::debug!("_wait_for_handler cancelled during sleep");
                             return Ok(WaitForHandlerResponse {
                                 handler_name,

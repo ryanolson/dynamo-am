@@ -75,7 +75,6 @@ async fn test_ack_response_with_confirmed_mode() -> Result<()> {
 
     manager1.shutdown().await?;
     manager2.shutdown().await?;
-    cancel_token.cancel();
 
     Ok(())
 }
@@ -159,7 +158,6 @@ async fn test_nack_response_on_handler_error() -> Result<()> {
 
     manager1.shutdown().await?;
     manager2.shutdown().await?;
-    cancel_token.cancel();
 
     Ok(())
 }
@@ -212,6 +210,7 @@ async fn test_response_with_payload() -> Result<()> {
         .active_message("echo_test")?
         .payload(&request)?
         .expect_response::<EchoResponse>()
+        .timeout(Duration::from_secs(5))
         .send(peer2_info.instance_id)
         .await?;
 
@@ -225,7 +224,6 @@ async fn test_response_with_payload() -> Result<()> {
 
     manager1.shutdown().await?;
     manager2.shutdown().await?;
-    cancel_token.cancel();
 
     Ok(())
 }
@@ -272,7 +270,6 @@ async fn test_response_with_raw_bytes() -> Result<()> {
 
     manager1.shutdown().await?;
     manager2.shutdown().await?;
-    cancel_token.cancel();
 
     Ok(())
 }
@@ -337,6 +334,7 @@ async fn test_concurrent_mixed_responses() -> Result<()> {
             client
                 .active_message("ack_handler")
                 .unwrap()
+                .timeout(Duration::from_secs(5))
                 .send(peer_id)
                 .await
         })
@@ -349,9 +347,10 @@ async fn test_concurrent_mixed_responses() -> Result<()> {
             client
                 .active_message("error_handler")
                 .unwrap()
-                .payload(&"test".to_string())
+                .payload("test".to_string())
                 .unwrap()
                 .expect_response::<String>()
+                .timeout(Duration::from_secs(5))
                 .send(peer_id)
                 .await
                 .unwrap()
@@ -367,9 +366,10 @@ async fn test_concurrent_mixed_responses() -> Result<()> {
             client
                 .active_message("echo_handler")
                 .unwrap()
-                .payload(&"hello".to_string())
+                .payload("hello".to_string())
                 .unwrap()
                 .expect_response::<String>()
+                .timeout(Duration::from_secs(5))
                 .send(peer_id)
                 .await
                 .unwrap()
@@ -390,7 +390,6 @@ async fn test_concurrent_mixed_responses() -> Result<()> {
 
     manager1.shutdown().await?;
     manager2.shutdown().await?;
-    cancel_token.cancel();
 
     Ok(())
 }

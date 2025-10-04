@@ -3,14 +3,18 @@
 
 [package]
 name = "dynamo-am"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 authors = ["NVIDIA Inc. <sw-dl-dynamo@nvidia.com>"]
 license = "Apache-2.0"
 homepage = "https://github.com/ai-dynamo/dynamo"
 repository = "https://github.com/ai-dynamo/dynamo.git"
 readme = "README.md"
 description = "Dynamo Active Message System - High-performance distributed messaging"
+keywords = ["distributed", "rpc", "zeromq", "active-message"]
+categories = ["network-programming", "asynchronous"]
+exclude = [".claude/"]
 
 [dependencies]
 anyhow = "1"

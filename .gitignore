@@ -2,6 +2,9 @@
 target/
 Cargo.lock
 
+# Claude Code settings
+.claude/
+
 # START Ruler Generated Files
 /.cursor/instructions.md
 /.cursor/instructions.md.bak
