@@ -45,7 +45,7 @@ pub type Endpoint = String;
 
 /// Represents possible connection endpoints for a worker/peer.
 /// This allows connecting to a peer without needing to know their instance_id upfront.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct WorkerAddress {
     /// TCP endpoint for cross-host communication
     pub tcp_endpoint: Option<String>,

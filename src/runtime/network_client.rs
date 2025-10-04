@@ -50,6 +50,9 @@ pub struct NetworkClient {
     /// The underlying transport implementation (type-erased)
     transport: Arc<BoxedTransport>,
 
+    /// Streaming transport for response anchors
+    streaming_transport: Arc<crate::zmq::streaming_transport::ZmqStreamingTransport>,
+
     /// Response manager for correlating responses, ACKs, and receipts
     response_manager: SharedResponseManager,
 }
@@ -70,6 +73,7 @@ impl NetworkClient {
         instance_id: InstanceId,
         endpoint: Endpoint,
         transport: BoxedTransport,
+        streaming_transport: Arc<crate::zmq::streaming_transport::ZmqStreamingTransport>,
         response_manager: SharedResponseManager,
     ) -> Self {
         let state = NetworkClientState {
@@ -83,8 +87,16 @@ impl NetworkClient {
             state: Arc::new(RwLock::new(state)),
             connections: Arc::new(DashMap::new()),
             transport: Arc::new(transport),
+            streaming_transport,
             response_manager,
         }
+    }
+
+    /// Get the streaming transport for creating response anchor streams
+    pub fn streaming_transport(
+        &self,
+    ) -> &Arc<crate::zmq::streaming_transport::ZmqStreamingTransport> {
+        &self.streaming_transport
     }
 
     /// Fast send path using pre-established connection handle
