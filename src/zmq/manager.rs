@@ -78,12 +78,32 @@ pub struct ZmqActiveMessageManager {
     // v2 Dispatcher integration
     control_tx: mpsc::Sender<ControlMessage>,
     dispatcher_task: Arc<Mutex<Option<tokio::task::JoinHandle<Result<()>>>>>,
+
+    // Response anchor manager
+    anchor_manager: Arc<crate::runtime::anchor_manager::AnchorManager>,
 }
 
 impl ZmqActiveMessageManager {
     /// Get the client (now returns concrete NetworkClient)
     pub fn client(&self) -> Arc<NetworkClient> {
         self.client.clone()
+    }
+
+    /// Create a response anchor
+    ///
+    /// Returns a handle that can be sent across the network and a stream
+    /// for receiving data from remote sources.
+    pub async fn create_response_anchor<T>(
+        &self,
+        worker_address: crate::api::client::WorkerAddress,
+    ) -> anyhow::Result<(
+        crate::protocols::response_anchor::ResponseAnchorHandle,
+        crate::runtime::anchor_manager::ResponseAnchorStream<T>,
+    )>
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+    {
+        self.anchor_manager.create_anchor(worker_address).await
     }
 
     pub fn manager_state(&self) -> Arc<RwLock<ManagerState>> {
@@ -181,11 +201,17 @@ impl ZmqActiveMessageManager {
         let zmq_transport = Arc::new(ZmqThinTransport::new());
         let boxed_transport = crate::transport::boxed::BoxedTransport::new(zmq_transport);
 
+        // Create streaming transport for response anchors
+        let streaming_transport = Arc::new(
+            crate::zmq::streaming_transport::ZmqStreamingTransport::new(instance_id),
+        );
+
         // Create NetworkClient (now concrete, no generics!)
         let client = Arc::new(NetworkClient::new(
             instance_id,
             tcp_endpoint.clone(),
             boxed_transport,
+            streaming_transport.clone(),
             response_manager.clone(),
         ));
 
@@ -222,6 +248,16 @@ impl ZmqActiveMessageManager {
             dispatch_tx.clone(),
         );
 
+        // Create AnchorManager for response anchors
+        let anchor_manager = Arc::new(
+            crate::runtime::anchor_manager::AnchorManager::new(
+                streaming_transport,
+                client.clone(),
+                instance_id,
+            )
+            .await?,
+        );
+
         let manager = Self {
             state: state.clone(),
             client: client.clone(),
@@ -233,6 +269,7 @@ impl ZmqActiveMessageManager {
             message_router,
             control_tx,
             dispatcher_task: Arc::new(Mutex::new(Some(dispatcher_task))),
+            anchor_manager,
         };
 
         manager.register_builtin_handlers().await?;
@@ -347,6 +384,98 @@ impl ZmqActiveMessageManager {
             self.cancel_token.clone(),
         )
         .await?;
+
+        // Register response anchor system handlers
+        self.register_anchor_handlers().await?;
+
+        Ok(())
+    }
+
+    async fn register_anchor_handlers(&self) -> Result<()> {
+        use crate::protocols::response_anchor::*;
+        use crate::runtime::handler_impls::typed_unary_handler_async_with_tracker;
+
+        let anchor_manager = self.anchor_manager.clone();
+
+        // Register _anchor_attach handler
+        let attach_handler = typed_unary_handler_async_with_tracker(
+            "_anchor_attach".to_string(),
+            move |ctx: crate::runtime::handler_impls::TypedContext<AnchorAttachRequest>| {
+                let manager = anchor_manager.clone();
+                async move { manager.handle_attach(ctx.input).await }
+            },
+            self.message_task_tracker.clone(),
+        );
+
+        self.control_tx
+            .send(crate::runtime::dispatcher::ControlMessage::Register {
+                name: "_anchor_attach".to_string(),
+                dispatcher: attach_handler,
+            })
+            .await?;
+
+        let anchor_manager = self.anchor_manager.clone();
+
+        // Register _anchor_detach handler
+        let detach_handler = typed_unary_handler_async_with_tracker(
+            "_anchor_detach".to_string(),
+            move |ctx: crate::runtime::handler_impls::TypedContext<AnchorDetachRequest>| {
+                let manager = anchor_manager.clone();
+                async move { manager.handle_detach(ctx.input).await }
+            },
+            self.message_task_tracker.clone(),
+        );
+
+        self.control_tx
+            .send(crate::runtime::dispatcher::ControlMessage::Register {
+                name: "_anchor_detach".to_string(),
+                dispatcher: detach_handler,
+            })
+            .await?;
+
+        let anchor_manager = self.anchor_manager.clone();
+
+        // Register _anchor_finalize handler
+        let finalize_handler = typed_unary_handler_async_with_tracker(
+            "_anchor_finalize".to_string(),
+            move |ctx: crate::runtime::handler_impls::TypedContext<AnchorFinalizeRequest>| {
+                let manager = anchor_manager.clone();
+                async move { manager.handle_finalize(ctx.input).await }
+            },
+            self.message_task_tracker.clone(),
+        );
+
+        self.control_tx
+            .send(crate::runtime::dispatcher::ControlMessage::Register {
+                name: "_anchor_finalize".to_string(),
+                dispatcher: finalize_handler,
+            })
+            .await?;
+
+        let anchor_manager = self.anchor_manager.clone();
+
+        // Register _anchor_cancel handler
+        // Note: We spawn the async work to make the future Sync (required by handler)
+        let cancel_handler = typed_unary_handler_async_with_tracker(
+            "_anchor_cancel".to_string(),
+            move |ctx: crate::runtime::handler_impls::TypedContext<AnchorCancelRequest>| {
+                let manager = anchor_manager.clone();
+                let handle = tokio::spawn(async move {
+                    manager.handle_cancel(ctx.input).await
+                });
+                async move {
+                    handle.await.map_err(|e| format!("Task join error: {}", e))?
+                }
+            },
+            self.message_task_tracker.clone(),
+        );
+
+        self.control_tx
+            .send(crate::runtime::dispatcher::ControlMessage::Register {
+                name: "_anchor_cancel".to_string(),
+                dispatcher: cancel_handler,
+            })
+            .await?;
 
         Ok(())
     }

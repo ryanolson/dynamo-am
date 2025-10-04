@@ -19,6 +19,7 @@ pub use api::{
     },
     handler::{ActiveMessageContext, HandlerEvent, InstanceId},
     message::ActiveMessage,
+    response_anchor::{ResponseAnchorHandle, ResponseAnchorSource, ResponseSink},
     status::{DetachedConfirm, MessageStatus, SendAndConfirm, WithResponse},
 };
 
@@ -33,6 +34,7 @@ pub use protocols::{
 };
 
 pub use runtime::{
+    anchor_manager::ResponseAnchorStream,
     cohort::{
         CohortFailurePolicy, CohortType, LeaderWorkerCohort, LeaderWorkerCohortConfig,
         LeaderWorkerCohortConfigBuilder, WorkerInfo,
