@@ -18,6 +18,8 @@ use crate::api::client::ActiveMessageClient;
 use crate::protocols::response_anchor::*;
 use crate::runtime::network_client::NetworkClient;
 use crate::transport::streaming::{StreamSink, StreamingTransport};
+use tokio::runtime::Handle;
+use tracing::warn;
 
 // Re-export the handle type from protocols
 pub use crate::protocols::response_anchor::ResponseAnchorHandle;
@@ -58,8 +60,12 @@ impl<T: Serialize + Send + 'static> ResponseAnchorSource<T> {
         let source_endpoint = client.as_ref().endpoint().to_string();
 
         // Send attach request via ActiveMessage
-        let request =
-            AnchorAttachRequest::new(handle.anchor_id, session_id, source_endpoint.clone());
+        let request = AnchorAttachRequest::new(
+            handle.anchor_id,
+            session_id,
+            source_instance_id,
+            source_endpoint.clone(),
+        );
 
         // Use system_active_message for system handler
         let status = client
@@ -76,11 +82,18 @@ impl<T: Serialize + Send + 'static> ResponseAnchorSource<T> {
         let stream_endpoint = response.stream_endpoint;
 
         // Create the streaming sink
-        let mut stream_sink = client
+        let mut stream_sink = match client
             .as_ref()
             .streaming_transport()
             .create_stream_source::<T>(&stream_endpoint, handle.anchor_id, session_id)
-            .await?;
+            .await
+        {
+            Ok(sink) => sink,
+            Err(error) => {
+                Self::detach_after_failed_attach(client.as_ref(), &handle, session_id).await;
+                return Err(error);
+            }
+        };
 
         // Generate cancellation ID and send prologue frame
         let cancellation_id = Uuid::new_v4();
@@ -94,7 +107,18 @@ impl<T: Serialize + Send + 'static> ResponseAnchorSource<T> {
             source_endpoint: source_endpoint.clone(),
         };
 
-        stream_sink.send(prologue_frame).await?;
+        if let Err(error) = stream_sink.send(prologue_frame).await {
+            if let Err(close_err) = stream_sink.close().await {
+                warn!(
+                    anchor_id = %handle.anchor_id,
+                    session_id = %session_id,
+                    error = %close_err,
+                    "Failed to close stream sink after prologue error",
+                );
+            }
+            Self::detach_after_failed_attach(client.as_ref(), &handle, session_id).await;
+            return Err(error);
+        }
 
         // Create the sink
         let sink = ResponseSink {
@@ -112,55 +136,207 @@ impl<T: Serialize + Send + 'static> ResponseAnchorSource<T> {
     }
 }
 
+impl<T> ResponseAnchorSource<T> {
+    async fn detach_after_failed_attach(
+        client: &NetworkClient,
+        handle: &ResponseAnchorHandle,
+        session_id: Uuid,
+    ) {
+        let request = AnchorDetachRequest::new(handle.anchor_id, session_id);
+
+        let detach_result = async move {
+            let status = client
+                .system_active_message("_anchor_detach")
+                .expect_response::<AnchorDetachResponse>()
+                .payload(request)?
+                .send(handle.instance_id)
+                .await?;
+
+            let _: AnchorDetachResponse = status.await_response().await?;
+            anyhow::Result::<()>::Ok(())
+        }
+        .await;
+
+        if let Err(error) = detach_result {
+            warn!(
+                anchor_id = %handle.anchor_id,
+                session_id = %session_id,
+                error = %error,
+                "Failed to detach after aborted attach",
+            );
+        }
+    }
+}
+
+impl<T: Serialize + Send + 'static> Drop for ResponseSink<T> {
+    fn drop(&mut self) {
+        let Some(mut sink) = self.stream_sink.take() else {
+            return;
+        };
+
+        let Ok(handle) = Handle::try_current() else {
+            warn!(
+                anchor_id = %self.handle.anchor_id,
+                session_id = %self.session_id,
+                "ResponseSink dropped outside Tokio runtime; leaving anchor attached",
+            );
+            return;
+        };
+
+        let anchor_id = self.handle.anchor_id;
+        let session_id = self.session_id;
+        let instance_id = self.handle.instance_id;
+        let client = self.client.clone();
+
+        handle.spawn(async move {
+            if let Err(error) = sink
+                .send(StreamFrame::transport_error(
+                    "response sink dropped without detach/finalize",
+                ))
+                .await
+            {
+                warn!(
+                    anchor_id = %anchor_id,
+                    session_id = %session_id,
+                    error = %error,
+                    "Failed to send transport-error sentinel during ResponseSink drop",
+                );
+            }
+
+            if let Err(error) = sink.close().await {
+                warn!(
+                    anchor_id = %anchor_id,
+                    session_id = %session_id,
+                    error = %error,
+                    "Failed to close stream sink during ResponseSink drop",
+                );
+            }
+
+            let detach_result = async {
+                let request = AnchorDetachRequest::new(anchor_id, session_id);
+                let status = client
+                    .system_active_message("_anchor_detach")
+                    .expect_response::<AnchorDetachResponse>()
+                    .payload(request)?
+                    .send(instance_id)
+                    .await?;
+
+                let _: AnchorDetachResponse = status.await_response().await?;
+                anyhow::Result::<()>::Ok(())
+            }
+            .await;
+
+            if let Err(error) = detach_result {
+                warn!(
+                    anchor_id = %anchor_id,
+                    session_id = %session_id,
+                    error = %error,
+                    "Failed to issue detach after ResponseSink drop",
+                );
+            }
+        });
+    }
+}
+
 /// Active streaming connection to a response anchor
 ///
 /// This type allows sending data items to an attached anchor.
 /// The sink can be detached (releasing the lock but keeping the anchor alive)
 /// or finalized (closing the anchor's stream permanently).
-pub struct ResponseSink<T> {
+pub struct ResponseSink<T>
+where
+    T: Serialize + Send + 'static,
+{
     handle: ResponseAnchorHandle,
     session_id: Uuid,
     source_instance_id: uuid::Uuid,
     source_endpoint: String,
     stream_endpoint: String,
     client: Arc<NetworkClient>,
-    stream_sink: Option<Box<dyn StreamSink<T>>>,
+    stream_sink: Option<Box<dyn StreamSink<T> + Send + 'static>>,
     _phantom: PhantomData<T>,
 }
 
 impl<T: Serialize + Send + 'static> ResponseSink<T> {
-    /// Send a data item or application error to the anchor
-    ///
-    /// # Arguments
-    /// * `item` - Result containing either data or an application-level error
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - Serialization fails
-    /// - The connection is closed
-    /// - The underlying transport fails
-    ///
-    /// # Examples
-    /// ```ignore
-    /// // Send successful data
-    /// sink.send(Ok(my_data)).await?;
-    ///
-    /// // Send application error
-    /// sink.send(Err("computation failed")).await?;
-    /// ```
-    pub async fn send(&mut self, item: Result<T, impl ToString>) -> Result<()> {
-        let frame = match item {
-            Ok(data) => StreamFrame::ok(data),
-            Err(e) => StreamFrame::err(e),
-        };
+    async fn send_control_frame(&mut self, frame: StreamFrame<T>) -> Result<()> {
+        if let Some(mut sink) = self.stream_sink.take() {
+            if let Err(error) = sink.send(frame).await {
+                // Put sink back so drop can try a best-effort cleanup
+                self.stream_sink = Some(sink);
+                return Err(error);
+            }
 
-        if let Some(ref mut sink) = self.stream_sink {
-            sink.send(frame).await?;
-        } else {
-            return Err(anyhow::anyhow!("Stream sink not initialized"));
+            if let Err(error) = sink.close().await {
+                // We already sent the sentinel; log and move on
+                warn!(
+                    anchor_id = %self.handle.anchor_id,
+                    session_id = %self.session_id,
+                    error = %error,
+                    "Failed to close stream sink after sending control frame",
+                );
+            }
         }
 
         Ok(())
+    }
+
+    async fn send_detach_control(&self) -> Result<()> {
+        let request = AnchorDetachRequest::new(self.handle.anchor_id, self.session_id);
+
+        let status = self
+            .client
+            .as_ref()
+            .system_active_message("_anchor_detach")
+            .expect_response::<AnchorDetachResponse>()
+            .payload(request)?
+            .send(self.handle.instance_id)
+            .await?;
+
+        let _: AnchorDetachResponse = status.await_response().await?;
+
+        Ok(())
+    }
+
+    async fn send_finalize_control(&self) -> Result<()> {
+        let request = AnchorFinalizeRequest::new(self.handle.anchor_id, self.session_id);
+
+        let status = self
+            .client
+            .as_ref()
+            .system_active_message("_anchor_finalize")
+            .expect_response::<AnchorFinalizeResponse>()
+            .payload(request)?
+            .send(self.handle.instance_id)
+            .await?;
+
+        let _: AnchorFinalizeResponse = status.await_response().await?;
+
+        Ok(())
+    }
+
+    /// Send a successful item to the anchor
+    ///
+    /// # Errors
+    /// Returns an error if serialization or the underlying transport fails.
+    pub async fn send_ok(&mut self, item: T) -> Result<()> {
+        self.send_frame(StreamFrame::ok(item)).await
+    }
+
+    /// Send an application-level error to the anchor
+    ///
+    /// The error string is surfaced to the consumer of the anchor stream.
+    pub async fn send_err(&mut self, error: impl Into<String>) -> Result<()> {
+        let message = error.into();
+        self.send_frame(StreamFrame::err(message)).await
+    }
+
+    #[inline]
+    async fn send_frame(&mut self, frame: StreamFrame<T>) -> Result<()> {
+        if let Some(ref mut sink) = self.stream_sink {
+            sink.send(frame).await
+        } else {
+            Err(anyhow::anyhow!("Stream sink not initialized"))
+        }
     }
 
     /// Detach from the anchor (release lock, keep stream open)
@@ -175,29 +351,9 @@ impl<T: Serialize + Send + 'static> ResponseSink<T> {
     ///
     /// # Errors
     /// Returns an error if the detach control message fails.
-    pub async fn detach(self) -> Result<()> {
-        // Send Detached frame on streaming channel
-        if let Some(mut sink) = self.stream_sink {
-            sink.send(StreamFrame::Detached).await?;
-            sink.close().await?;
-        }
-
-        // Send detach control message
-        let request = AnchorDetachRequest::new(self.handle.anchor_id, self.session_id);
-
-        let status = self
-            .client
-            .as_ref()
-            .system_active_message("_anchor_detach")
-            .expect_response::<AnchorDetachResponse>()
-            .payload(request)?
-            .send(self.handle.instance_id)
-            .await?;
-
-        // Wait for acknowledgment
-        let _response: AnchorDetachResponse = status.await_response().await?;
-
-        Ok(())
+    pub async fn detach(mut self) -> Result<()> {
+        self.send_control_frame(StreamFrame::Detached).await?;
+        self.send_detach_control().await
     }
 
     /// Finalize the anchor (close stream permanently)
@@ -211,29 +367,9 @@ impl<T: Serialize + Send + 'static> ResponseSink<T> {
     ///
     /// # Errors
     /// Returns an error if the finalize control message fails.
-    pub async fn finalize(self) -> Result<()> {
-        // Send Finalized frame on streaming channel
-        if let Some(mut sink) = self.stream_sink {
-            sink.send(StreamFrame::Finalized).await?;
-            sink.close().await?;
-        }
-
-        // Send finalize control message
-        let request = AnchorFinalizeRequest::new(self.handle.anchor_id, self.session_id);
-
-        let status = self
-            .client
-            .as_ref()
-            .system_active_message("_anchor_finalize")
-            .expect_response::<AnchorFinalizeResponse>()
-            .payload(request)?
-            .send(self.handle.instance_id)
-            .await?;
-
-        // Wait for acknowledgment
-        let _response: AnchorFinalizeResponse = status.await_response().await?;
-
-        Ok(())
+    pub async fn finalize(mut self) -> Result<()> {
+        self.send_control_frame(StreamFrame::Finalized).await?;
+        self.send_finalize_control().await
     }
 
     /// Get the anchor ID

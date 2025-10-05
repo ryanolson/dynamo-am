@@ -13,11 +13,11 @@
 
 use anyhow::Result;
 use dynamo_am::{
+    ResponseAnchorHandle, ResponseAnchorSource,
     client::ActiveMessageClient,
     handler_impls::{TypedContext, typed_unary_handler_with_tracker},
     manager::ActiveMessageManager,
     zmq::ZmqActiveMessageManager,
-    ResponseAnchorHandle, ResponseAnchorSource,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -104,21 +104,22 @@ async fn test_attach_send_finalize_old() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // B attaches to the anchor
-    let mut sink = ResponseAnchorSource::<TestData>::attach(handle.clone(), client_b.clone()).await?;
+    let mut sink =
+        ResponseAnchorSource::<TestData>::attach(handle.clone(), client_b.clone()).await?;
 
     tracing::info!("Worker B attached to anchor");
 
     // B sends some data
-    sink.send(Ok::<_, String>(TestData {
+    sink.send_ok(TestData {
         value: 42,
         message: "Hello from B".to_string(),
-    }))
+    })
     .await?;
 
-    sink.send(Ok::<_, String>(TestData {
+    sink.send_ok(TestData {
         value: 100,
         message: "Second message".to_string(),
-    }))
+    })
     .await?;
 
     // A receives the data
@@ -186,15 +187,17 @@ async fn test_detach_reattach_flow() -> Result<()> {
     tracing::info!("Worker A created anchor: {}", handle.anchor_id);
 
     // B attaches and sends data
-    let mut sink_b = ResponseAnchorSource::<TestData>::attach(handle.clone(), client_b.clone()).await?;
+    let mut sink_b =
+        ResponseAnchorSource::<TestData>::attach(handle.clone(), client_b.clone()).await?;
 
     tracing::info!("Worker B attached to anchor");
 
-    sink_b.send(Ok::<_, String>(TestData {
-        value: 1,
-        message: "From B - message 1".to_string(),
-    }))
-    .await?;
+    sink_b
+        .send_ok(TestData {
+            value: 1,
+            message: "From B - message 1".to_string(),
+        })
+        .await?;
 
     // A receives B's message
     let msg1 = stream.recv().await.expect("Should receive B's message")?;
@@ -210,28 +213,37 @@ async fn test_detach_reattach_flow() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // C attaches to the same anchor
-    let mut sink_c = ResponseAnchorSource::<TestData>::attach(handle.clone(), client_c.clone()).await?;
+    let mut sink_c =
+        ResponseAnchorSource::<TestData>::attach(handle.clone(), client_c.clone()).await?;
 
     tracing::info!("Worker C attached to anchor");
 
-    sink_c.send(Ok::<_, String>(TestData {
-        value: 2,
-        message: "From C - message 1".to_string(),
-    }))
-    .await?;
+    sink_c
+        .send_ok(TestData {
+            value: 2,
+            message: "From C - message 1".to_string(),
+        })
+        .await?;
 
-    sink_c.send(Ok::<_, String>(TestData {
-        value: 3,
-        message: "From C - message 2".to_string(),
-    }))
-    .await?;
+    sink_c
+        .send_ok(TestData {
+            value: 3,
+            message: "From C - message 2".to_string(),
+        })
+        .await?;
 
     // A receives C's messages
-    let msg2 = stream.recv().await.expect("Should receive C's first message")?;
+    let msg2 = stream
+        .recv()
+        .await
+        .expect("Should receive C's first message")?;
     assert_eq!(msg2.value, 2);
     assert_eq!(msg2.message, "From C - message 1");
 
-    let msg3 = stream.recv().await.expect("Should receive C's second message")?;
+    let msg3 = stream
+        .recv()
+        .await
+        .expect("Should receive C's second message")?;
     assert_eq!(msg3.value, 3);
     assert_eq!(msg3.message, "From C - message 2");
 
@@ -335,10 +347,10 @@ async fn test_pass_handle_via_active_message() -> Result<()> {
     tracing::info!("Worker B attached using received handle");
 
     // B sends data
-    sink.send(Ok::<_, String>(TestData {
+    sink.send_ok(TestData {
         value: 999,
         message: "Sent via handle from active message".to_string(),
-    }))
+    })
     .await?;
 
     // A receives the data
@@ -386,20 +398,20 @@ async fn test_application_errors() -> Result<()> {
     let mut sink = ResponseAnchorSource::<TestData>::attach(handle, client_b.clone()).await?;
 
     // Send successful data
-    sink.send(Ok::<_, String>(TestData {
+    sink.send_ok(TestData {
         value: 1,
         message: "Success".to_string(),
-    }))
+    })
     .await?;
 
     // Send application error
-    sink.send(Err::<TestData, _>("Something went wrong")).await?;
+    sink.send_err("Something went wrong").await?;
 
     // Send more successful data
-    sink.send(Ok::<_, String>(TestData {
+    sink.send_ok(TestData {
         value: 2,
         message: "Success again".to_string(),
-    }))
+    })
     .await?;
 
     // Receive and verify
@@ -409,9 +421,15 @@ async fn test_application_errors() -> Result<()> {
     let err_result = stream.recv().await.expect("Should receive error");
     assert!(err_result.is_err(), "Should be an error");
     let err_msg = err_result.unwrap_err().to_string();
-    assert!(err_msg.contains("Something went wrong"), "Error message should be preserved");
+    assert!(
+        err_msg.contains("Something went wrong"),
+        "Error message should be preserved"
+    );
 
-    let msg2 = stream.recv().await.expect("Should receive second message")?;
+    let msg2 = stream
+        .recv()
+        .await
+        .expect("Should receive second message")?;
     assert_eq!(msg2.value, 2);
 
     sink.finalize().await?;
@@ -448,10 +466,10 @@ async fn test_simple_attach_send() -> Result<()> {
 
     let mut sink = ResponseAnchorSource::<TestData>::attach(handle, client_b).await?;
 
-    sink.send(Ok::<_, String>(TestData {
+    sink.send_ok(TestData {
         value: 1,
         message: "test".to_string(),
-    }))
+    })
     .await?;
 
     let msg = stream.recv().await.expect("Should receive message")?;

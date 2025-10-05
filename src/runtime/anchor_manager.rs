@@ -11,10 +11,9 @@
 //! - Cleanup on cancel/finalize
 
 use anyhow::Result;
-use bytes::Bytes;
 use dashmap::DashMap;
 use serde::{Serialize, de::DeserializeOwned};
-use std::any::type_name;
+use std::any::{Any, type_name};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Instant;
@@ -53,8 +52,7 @@ pub struct AnchorManager {
 /// Entry for an active anchor
 struct AnchorEntry {
     /// Channel to send frames to user's stream
-    /// We send Result<Bytes, anyhow::Error> and let the stream deserialize
-    stream_sender: mpsc::UnboundedSender<Result<Bytes, anyhow::Error>>,
+    stream_sender: mpsc::Sender<AnchorStreamEvent>,
 
     /// Current attachment session (if any)
     attachment: Option<AttachmentSession>,
@@ -79,6 +77,13 @@ struct AttachmentSession {
     session_id: Uuid,
     source_instance: InstanceId,
     attached_at: Instant,
+}
+
+const STREAM_CHANNEL_CAPACITY: usize = 128;
+
+enum AnchorStreamEvent {
+    Item(Result<Box<dyn Any + Send>, String>),
+    TransportError(anyhow::Error),
 }
 
 impl AnchorManager {
@@ -123,7 +128,7 @@ impl AnchorManager {
         let anchor_id = Uuid::new_v4();
 
         // Create channel for user stream
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
 
         // Create anchor entry
         let entry = AnchorEntry {
@@ -149,7 +154,7 @@ impl AnchorManager {
         let handle = ResponseAnchorHandle::new(anchor_id, self.instance_id, worker_address);
 
         // Create user stream
-        let stream = ResponseAnchorStream::new(rx);
+        let stream = ResponseAnchorStream::new(rx, type_name::<T>());
 
         debug!(
             anchor_id = %anchor_id,
@@ -161,8 +166,11 @@ impl AnchorManager {
     }
 
     /// Spawn a task to route frames from the receiver to the user stream
-    fn spawn_frame_router<T>(&self, anchor_id: Uuid, mut receiver: Box<dyn StreamReceiver<T>>)
-    where
+    fn spawn_frame_router<T>(
+        &self,
+        anchor_id: Uuid,
+        mut receiver: Box<dyn StreamReceiver<T> + Send + 'static>,
+    ) where
         T: Serialize + DeserializeOwned + Send + 'static,
     {
         let anchors = self.anchors.clone();
@@ -180,9 +188,22 @@ impl AnchorManager {
                         error!(anchor_id = %anchor_id, error = %e, "Error receiving frame");
                         // Send transport error to user stream
                         if let Some(entry) = anchors.get(&anchor_id) {
-                            let _ = entry
-                                .stream_sender
-                                .send(Err(anyhow::anyhow!("Transport error: {}", e)));
+                            let sender = entry.stream_sender.clone();
+                            drop(entry);
+
+                            if let Err(error) = sender
+                                .send(AnchorStreamEvent::TransportError(anyhow::anyhow!(
+                                    "Transport error: {}",
+                                    e
+                                )))
+                                .await
+                            {
+                                warn!(
+                                    anchor_id = %anchor_id,
+                                    error = %error,
+                                    "Failed to propagate transport error to user stream",
+                                );
+                            }
                         }
                         break;
                     }
@@ -200,7 +221,7 @@ impl AnchorManager {
         frame: StreamFrame<T>,
     ) -> Result<()>
     where
-        T: Serialize,
+        T: Serialize + Send + 'static,
     {
         let entry = match anchors.get(&anchor_id) {
             Some(e) => e,
@@ -237,18 +258,21 @@ impl AnchorManager {
             }
 
             StreamFrame::Item(result) => {
-                // Serialize the item to Bytes
-                let bytes_result = match result {
-                    Ok(data) => {
-                        let bytes = serde_json::to_vec(&data)?;
-                        Ok(Bytes::from(bytes))
-                    }
-                    Err(msg) => Err(anyhow::anyhow!("Application error: {}", msg)),
+                let event = match result {
+                    Ok(data) => AnchorStreamEvent::Item(Ok(Box::new(data) as Box<dyn Any + Send>)),
+                    Err(msg) => AnchorStreamEvent::Item(Err(msg)),
                 };
 
-                // Send to user stream
-                if let Err(e) = entry.stream_sender.send(bytes_result) {
-                    warn!(anchor_id = %anchor_id, "Failed to send item to user stream: {}", e);
+                let sender = entry.stream_sender.clone();
+                drop(entry);
+
+                if let Err(error) = sender.send(event).await {
+                    warn!(
+                        anchor_id = %anchor_id,
+                        error = %error,
+                        "Failed to deliver item to user stream; removing anchor",
+                    );
+                    anchors.remove(&anchor_id);
                 }
             }
 
@@ -279,13 +303,23 @@ impl AnchorManager {
             StreamFrame::TransportError(msg) => {
                 error!(anchor_id = %anchor_id, "Transport error: {}", msg);
 
-                // Send error to user stream
-                let _ = entry
-                    .stream_sender
-                    .send(Err(anyhow::anyhow!("Transport error: {}", msg)));
+                let sender = entry.stream_sender.clone();
+                drop(entry);
 
-                // Close stream
-                drop(entry); // Release the read lock
+                if let Err(error) = sender
+                    .send(AnchorStreamEvent::TransportError(anyhow::anyhow!(
+                        "Transport error: {}",
+                        msg
+                    )))
+                    .await
+                {
+                    warn!(
+                        anchor_id = %anchor_id,
+                        error = %error,
+                        "Failed to propagate transport error to user stream",
+                    );
+                }
+
                 anchors.remove(&anchor_id);
 
                 debug!(anchor_id = %anchor_id, "Anchor removed due to transport error");
@@ -321,7 +355,7 @@ impl AnchorManager {
         // Create attachment session
         let session = AttachmentSession {
             session_id: request.session_id,
-            source_instance: self.instance_id, // TODO: Get from request
+            source_instance: request.source_instance_id,
             attached_at: Instant::now(),
         };
 
@@ -500,14 +534,16 @@ pub struct AnchorStats {
 /// - The stream is finalized (returns None)
 /// - A transport error occurs (yields error, then None)
 pub struct ResponseAnchorStream<T> {
-    rx: mpsc::UnboundedReceiver<Result<Bytes, anyhow::Error>>,
+    rx: mpsc::Receiver<AnchorStreamEvent>,
+    expected_type: &'static str,
     _phantom: PhantomData<T>,
 }
 
 impl<T> ResponseAnchorStream<T> {
-    fn new(rx: mpsc::UnboundedReceiver<Result<Bytes, anyhow::Error>>) -> Self {
+    fn new(rx: mpsc::Receiver<AnchorStreamEvent>, expected_type: &'static str) -> Self {
         Self {
             rx,
+            expected_type,
             _phantom: PhantomData,
         }
     }
@@ -520,20 +556,35 @@ impl<T> ResponseAnchorStream<T> {
     /// - None - stream closed (finalized or error)
     pub async fn recv(&mut self) -> Option<Result<T, anyhow::Error>>
     where
-        T: DeserializeOwned,
+        T: Send + 'static,
     {
-        let bytes_result = self.rx.recv().await?;
+        let event = self.rx.recv().await?;
+        Some(Self::convert_event(event, self.expected_type))
+    }
 
-        Some(match bytes_result {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| anyhow::anyhow!("Deserialization error: {}", e)),
-            Err(e) => Err(e),
-        })
+    fn convert_event(
+        event: AnchorStreamEvent,
+        expected_type: &'static str,
+    ) -> Result<T, anyhow::Error>
+    where
+        T: Send + 'static,
+    {
+        match event {
+            AnchorStreamEvent::Item(Ok(value)) => match value.downcast::<T>() {
+                Ok(v) => Ok(*v),
+                Err(_) => Err(anyhow::anyhow!(
+                    "Anchor stream received mismatched type; expected {}",
+                    expected_type
+                )),
+            },
+            AnchorStreamEvent::Item(Err(msg)) => Err(anyhow::anyhow!("Application error: {}", msg)),
+            AnchorStreamEvent::TransportError(err) => Err(err),
+        }
     }
 }
 
 // Implement Stream trait
-impl<T: DeserializeOwned + Unpin> futures::Stream for ResponseAnchorStream<T> {
+impl<T: Send + Unpin + 'static> futures::Stream for ResponseAnchorStream<T> {
     type Item = Result<T, anyhow::Error>;
 
     fn poll_next(
@@ -543,12 +594,8 @@ impl<T: DeserializeOwned + Unpin> futures::Stream for ResponseAnchorStream<T> {
         use std::task::Poll;
 
         match self.rx.poll_recv(cx) {
-            Poll::Ready(Some(bytes_result)) => {
-                let result = match bytes_result {
-                    Ok(bytes) => serde_json::from_slice(&bytes)
-                        .map_err(|e| anyhow::anyhow!("Deserialization error: {}", e)),
-                    Err(e) => Err(e),
-                };
+            Poll::Ready(Some(event)) => {
+                let result = Self::convert_event(event, self.expected_type);
                 Poll::Ready(Some(result))
             }
             Poll::Ready(None) => Poll::Ready(None),

@@ -460,11 +460,11 @@ impl ZmqActiveMessageManager {
             "_anchor_cancel".to_string(),
             move |ctx: crate::runtime::handler_impls::TypedContext<AnchorCancelRequest>| {
                 let manager = anchor_manager.clone();
-                let handle = tokio::spawn(async move {
-                    manager.handle_cancel(ctx.input).await
-                });
+                let handle = tokio::spawn(async move { manager.handle_cancel(ctx.input).await });
                 async move {
-                    handle.await.map_err(|e| format!("Task join error: {}", e))?
+                    handle
+                        .await
+                        .map_err(|e| format!("Task join error: {}", e))?
                 }
             },
             self.message_task_tracker.clone(),

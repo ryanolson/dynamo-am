@@ -5,10 +5,8 @@
 
 use anyhow::Result;
 use dynamo_am::{
-    client::ActiveMessageClient,
-    manager::ActiveMessageManager,
+    ResponseAnchorSource, client::ActiveMessageClient, manager::ActiveMessageManager,
     zmq::ZmqActiveMessageManager,
-    ResponseAnchorSource,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -74,11 +72,8 @@ async fn test_minimal_attach() -> Result<()> {
 
     // Try to send data
     println!("B sending data...");
-    let send_result = tokio::time::timeout(
-        Duration::from_secs(5),
-        sink.send(Ok::<_, String>(TestData { value: 42 })),
-    )
-    .await;
+    let send_result =
+        tokio::time::timeout(Duration::from_secs(5), sink.send_ok(TestData { value: 42 })).await;
 
     match send_result {
         Ok(Ok(())) => println!("SUCCESS: Data sent"),

@@ -56,7 +56,7 @@ Response Anchors provide a streaming abstraction for distributed systems where:
 │  │              │   ResponseSink    │                          │ │
 │  └──────────────┘                   └──────────────────────────┘ │
 │         │                                                        │
-│         │ sink.send(Ok(data))                                   │
+│         │ sink.send_ok(data)                                    │
 │         │ sink.detach()                                         │
 │         │ sink.finalize()                                       │
 │                                                                  │
@@ -78,22 +78,29 @@ Response Anchors provide a streaming abstraction for distributed systems where:
 
 ## Core Types
 
-### ResponseAnchorHandle
+### Response Anchor Handles
 
-Serializable handle that can be propagated across machines:
+Handles are expressed as two cooperating types that encode their lifecycle:
 
 ```rust
-pub struct ResponseAnchorHandle {
-    /// Unique identifier for this anchor
-    pub anchor_id: Uuid,
+/// Raw, cloneable payload used for serialization/transport
+pub struct SerializedAnchorHandle<T> { /* anchor_id, instance_id, worker_address */ }
 
-    /// Instance ID of the anchor holder
-    pub instance_id: InstanceId,
-
-    /// Address to reach the anchor holder
-    pub worker_address: WorkerAddress,
-}
+/// Armed handle that owns attachment rights (non-cloneable)
+pub struct ArmedAnchorHandle<T> { /* payload + lifecycle ref */ }
 ```
+
+- `SerializedAnchorHandle<T>` is inert data. Dropping it has no effect. Use this when
+  passing anchors over the wire or storing them.
+- `ArmedAnchorHandle<T>` owns exclusive rights to attach. Dropping an armed handle
+  sends a `StreamFrame::Dropped` sentinel and finalizes the anchor so resources are
+  reclaimed even if no attachment ever happens.
+- `SerializedAnchorHandle::arm(client)` produces an `ArmedAnchorHandle<T>` by
+  binding it to a local `NetworkClient`. Conversely, `ArmedAnchorHandle::disarm()`
+  consumes the armed handle and returns a `SerializedAnchorHandle<T>` for transport.
+- `ArmedAnchorHandle::attach(client)` consumes the armed handle and returns a
+  `ResponseSink<T>`; `ResponseSink::detach()` yields a fresh `ArmedAnchorHandle<T>`
+  while `ResponseSink::finalize()` consumes the lifecycle entirely.
 
 ### StreamFrame<T>
 
@@ -104,10 +111,13 @@ pub enum StreamFrame<T> {
     /// Data item or application-level error
     Item(Result<T, String>),
 
+    /// Sentinel: Armed handle was dropped without explicit finalize
+    Dropped,
+
     /// Sentinel: Source detached, anchor can accept new attachment
     /// Only sent after all Item frames from this session
-    Detached,
-
+    Detached,blluufincgnuruugrftf
+    
     /// Sentinel: Stream finalized, no more attachments allowed
     /// Anchor will close the stream after processing this
     Finalized,
@@ -179,7 +189,7 @@ pub struct AnchorManager {
 
 struct AnchorEntry {
     /// Channel to send frames to user's stream
-    stream_sender: mpsc::UnboundedSender<Result<T, anyhow::Error>>,
+    stream_sender: mpsc::Sender<AnchorStreamEvent>,
 
     /// Current attachment session (if any)
     attachment: Option<AttachmentSession>,
@@ -304,8 +314,11 @@ pub struct ResponseSink<T> {
 }
 
 impl<T: Serialize> ResponseSink<T> {
-    /// Send a data item or application error
-    pub async fn send(&mut self, item: Result<T, impl ToString>) -> Result<()>;
+    /// Send a successful data item
+    pub async fn send_ok(&mut self, item: T) -> Result<()>;
+
+    /// Send an application-level error message
+    pub async fn send_err(&mut self, error: impl Into<String>) -> Result<()>;
 
     /// Detach (release exclusive lock, keep stream open)
     pub async fn detach(self) -> Result<()>;
@@ -452,7 +465,7 @@ Source (Machine B)                          Anchor (Machine A)
 
 ```rust
 // Application error (part of stream)
-sink.send(Err("computation failed")).await?;
+sink.send_err("computation failed").await?;
 // → User sees: Some(Err("computation failed"))
 // → Stream continues
 
@@ -470,8 +483,19 @@ let sink = ResponseAnchorSource::attach(handle, client).await;
 
 - `AnchorManager` uses `DashMap` for lock-free concurrent access
 - `StreamFrame` routing is async and non-blocking
-- User streams are `mpsc::UnboundedChannel` (multi-producer safe)
+- User streams use bounded `mpsc::channel` to enforce backpressure
 - Exclusive attachment enforced by atomic compare-and-swap on attachment field
+- Armed handle and sink lifecycles use RAII: dropping an armed handle without
+  attaching emits `StreamFrame::Dropped`, ensuring anchors do not leak.
+
+## Timeouts & Cancellation
+
+- `ResponseAnchorStream::set_timeout(Duration)` registers an inactivity timeout.
+  If no attachment occurs before the deadline the `AnchorManager` finalizes the
+  anchor with a `Dropped` sentinel.
+- Successful attachments or calls to `ResponseSink::detach()` reset the timeout.
+- Attempting to arm or attach a handle after the timeout fires yields an
+  `AttachError::AnchorNotFound`, allowing callers to fail fast and abort their work.
 
 ## Performance Considerations
 

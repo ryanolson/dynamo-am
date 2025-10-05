@@ -14,15 +14,15 @@ use uuid::Uuid;
 use crate::api::client::WorkerAddress;
 use crate::api::handler::InstanceId;
 
-/// Serializable handle to a response anchor
+/// Serializable handle payload for a response anchor
 ///
-/// This handle can be sent across the network to allow remote attachment.
+/// This payload can be sent across the network to allow remote attachment.
 /// It contains all information needed to:
 /// - Identify the anchor (anchor_id)
 /// - Locate the holder (instance_id, worker_address)
 /// - Establish control and data connections
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ResponseAnchorHandle {
+pub struct SerializedAnchorHandle {
     /// Unique identifier for this anchor
     pub anchor_id: Uuid,
 
@@ -33,7 +33,7 @@ pub struct ResponseAnchorHandle {
     pub worker_address: WorkerAddress,
 }
 
-impl ResponseAnchorHandle {
+impl SerializedAnchorHandle {
     /// Create a new response anchor handle
     pub fn new(anchor_id: Uuid, instance_id: InstanceId, worker_address: WorkerAddress) -> Self {
         Self {
@@ -68,6 +68,9 @@ pub enum StreamFrame<T> {
     /// Application errors are part of the stream semantics - they represent
     /// failures in processing individual items, not transport failures.
     Item(Result<T, String>),
+
+    /// Sentinel: Armed handle dropped without explicit finalize
+    Dropped,
 
     /// Sentinel: Source detached, anchor can accept new attachment
     ///
@@ -108,14 +111,18 @@ impl<T> StreamFrame<T> {
 
     /// Check if this is a terminal frame (Finalized or TransportError)
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Finalized | Self::TransportError(_))
+        matches!(self, Self::Finalized | Self::Dropped | Self::TransportError(_))
     }
 
     /// Check if this is a control frame (not user data)
     pub fn is_control(&self) -> bool {
         matches!(
             self,
-            Self::Prologue { .. } | Self::Detached | Self::Finalized | Self::TransportError(_)
+            Self::Prologue { .. }
+                | Self::Dropped
+                | Self::Detached
+                | Self::Finalized
+                | Self::TransportError(_)
         )
     }
 }
@@ -133,15 +140,24 @@ pub struct AnchorAttachRequest {
     /// Unique session ID for this attachment
     pub session_id: Uuid,
 
+    /// Instance ID of the source initiating the attachment
+    pub source_instance_id: InstanceId,
+
     /// Endpoint where the source can be reached for data streaming
     pub source_endpoint: String,
 }
 
 impl AnchorAttachRequest {
-    pub fn new(anchor_id: Uuid, session_id: Uuid, source_endpoint: String) -> Self {
+    pub fn new(
+        anchor_id: Uuid,
+        session_id: Uuid,
+        source_instance_id: InstanceId,
+        source_endpoint: String,
+    ) -> Self {
         Self {
             anchor_id,
             session_id,
+            source_instance_id,
             source_endpoint,
         }
     }

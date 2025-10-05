@@ -249,7 +249,7 @@ impl StreamingTransport for ZmqStreamingTransport {
         endpoint: &str,
         anchor_id: Uuid,
         session_id: Uuid,
-    ) -> Result<Box<dyn StreamSink<T>>>
+    ) -> Result<Box<dyn StreamSink<T> + Send + 'static>>
     where
         T: Serialize + Send + 'static,
     {
@@ -261,7 +261,10 @@ impl StreamingTransport for ZmqStreamingTransport {
         Ok(Box::new(sink))
     }
 
-    async fn create_stream_receiver<T>(&self, anchor_id: Uuid) -> Result<Box<dyn StreamReceiver<T>>>
+    async fn create_stream_receiver<T>(
+        &self,
+        anchor_id: Uuid,
+    ) -> Result<Box<dyn StreamReceiver<T> + Send + 'static>>
     where
         T: DeserializeOwned + Send + 'static,
     {
