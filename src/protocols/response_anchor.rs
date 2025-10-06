@@ -22,7 +22,7 @@ use crate::api::handler::InstanceId;
 /// - Locate the holder (instance_id, worker_address)
 /// - Establish control and data connections
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SerializedAnchorHandle {
+pub struct AnchorHandlePayload {
     /// Unique identifier for this anchor
     pub anchor_id: Uuid,
 
@@ -33,7 +33,7 @@ pub struct SerializedAnchorHandle {
     pub worker_address: WorkerAddress,
 }
 
-impl SerializedAnchorHandle {
+impl AnchorHandlePayload {
     /// Create a new response anchor handle
     pub fn new(anchor_id: Uuid, instance_id: InstanceId, worker_address: WorkerAddress) -> Self {
         Self {
@@ -43,6 +43,9 @@ impl SerializedAnchorHandle {
         }
     }
 }
+
+/// Backward-compatible alias for prototype code
+pub type ResponseAnchorHandle = AnchorHandlePayload;
 
 /// Frame sent over the streaming transport
 ///
@@ -68,6 +71,9 @@ pub enum StreamFrame<T> {
     /// Application errors are part of the stream semantics - they represent
     /// failures in processing individual items, not transport failures.
     Item(Result<T, String>),
+
+    /// Heartbeat sent by the attached source when idle
+    Heartbeat,
 
     /// Sentinel: Armed handle dropped without explicit finalize
     Dropped,
@@ -111,7 +117,10 @@ impl<T> StreamFrame<T> {
 
     /// Check if this is a terminal frame (Finalized or TransportError)
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Finalized | Self::Dropped | Self::TransportError(_))
+        matches!(
+            self,
+            Self::Finalized | Self::Dropped | Self::TransportError(_)
+        )
     }
 
     /// Check if this is a control frame (not user data)
@@ -119,6 +128,7 @@ impl<T> StreamFrame<T> {
         matches!(
             self,
             Self::Prologue { .. }
+                | Self::Heartbeat
                 | Self::Dropped
                 | Self::Detached
                 | Self::Finalized
@@ -261,13 +271,17 @@ pub struct AnchorFinalizeRequest {
 
     /// Session ID that was provided during attach
     pub session_id: Uuid,
+
+    /// Reason for finalization
+    pub reason: FinalizeReason,
 }
 
 impl AnchorFinalizeRequest {
-    pub fn new(anchor_id: Uuid, session_id: Uuid) -> Self {
+    pub fn new(anchor_id: Uuid, session_id: Uuid, reason: FinalizeReason) -> Self {
         Self {
             anchor_id,
             session_id,
+            reason,
         }
     }
 }
@@ -276,6 +290,16 @@ impl AnchorFinalizeRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnchorFinalizeResponse {
     pub success: bool,
+}
+
+/// Reason for an anchor finalization
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum FinalizeReason {
+    /// Explicit finalize requested by the current attachment
+    Explicit,
+
+    /// Finalize triggered because an armed handle was dropped or timed out
+    Dropped,
 }
 
 /// Reasons why a finalize request might fail
@@ -373,6 +397,10 @@ mod tests {
         let frame: StreamFrame<i32> = StreamFrame::err("failed");
         assert!(!frame.is_terminal());
         assert!(!frame.is_control());
+
+        let frame: StreamFrame<i32> = StreamFrame::Heartbeat;
+        assert!(!frame.is_terminal());
+        assert!(frame.is_control());
 
         let frame: StreamFrame<i32> = StreamFrame::Detached;
         assert!(!frame.is_terminal());

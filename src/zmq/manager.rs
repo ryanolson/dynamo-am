@@ -97,13 +97,27 @@ impl ZmqActiveMessageManager {
         &self,
         worker_address: crate::api::client::WorkerAddress,
     ) -> anyhow::Result<(
-        crate::protocols::response_anchor::ResponseAnchorHandle,
+        crate::api::response_anchor::ArmedAnchorHandle<T>,
         crate::runtime::anchor_manager::ResponseAnchorStream<T>,
     )>
     where
         T: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
     {
         self.anchor_manager.create_anchor(worker_address).await
+    }
+
+    /// Convenience wrapper that creates a response anchor using this manager's own address.
+    pub async fn create_local_response_anchor<T>(
+        &self,
+    ) -> anyhow::Result<(
+        crate::api::response_anchor::ArmedAnchorHandle<T>,
+        crate::runtime::anchor_manager::ResponseAnchorStream<T>,
+    )>
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+    {
+        let worker_address = self.peer_info().await.address;
+        self.create_response_anchor(worker_address).await
     }
 
     pub fn manager_state(&self) -> Arc<RwLock<ManagerState>> {
@@ -474,6 +488,31 @@ impl ZmqActiveMessageManager {
             .send(crate::runtime::dispatcher::ControlMessage::Register {
                 name: "_anchor_cancel".to_string(),
                 dispatcher: cancel_handler,
+            })
+            .await?;
+
+        let client_for_cancel = self.client.clone();
+        let source_cancel_handler = typed_unary_handler_async_with_tracker(
+            "_source_cancel".to_string(),
+            move |ctx: crate::runtime::handler_impls::TypedContext<SourceCancellationSignal>| {
+                let client = client_for_cancel.clone();
+                async move {
+                    if !client.cancel_source_session(ctx.input.cancellation_id) {
+                        warn!(
+                            cancellation_id = %ctx.input.cancellation_id,
+                            "Received cancellation for unknown source session"
+                        );
+                    }
+                    Ok(())
+                }
+            },
+            self.message_task_tracker.clone(),
+        );
+
+        self.control_tx
+            .send(crate::runtime::dispatcher::ControlMessage::Register {
+                name: "_source_cancel".to_string(),
+                dispatcher: source_cancel_handler,
             })
             .await?;
 

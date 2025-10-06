@@ -12,5 +12,8 @@ pub use client::{ActiveMessageClient, PeerInfo, WorkerAddress};
 pub use control::ControlMetadata;
 pub use handler::{ActiveMessageContext, HandlerEvent, InstanceId};
 pub use message::ActiveMessage;
-pub use response_anchor::{ResponseAnchorHandle, ResponseAnchorSource, ResponseSink};
+pub use response_anchor::{
+    ArmedAnchorHandle, ResponseAnchorHandle, ResponseAnchorSource, ResponseSink,
+    SerializedAnchorHandle,
+};
 pub use status::{DetachedConfirm, MessageStatus, SendAndConfirm, WithResponse};

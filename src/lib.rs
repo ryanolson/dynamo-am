@@ -19,7 +19,10 @@ pub use api::{
     },
     handler::{ActiveMessageContext, HandlerEvent, InstanceId},
     message::ActiveMessage,
-    response_anchor::{ResponseAnchorHandle, ResponseAnchorSource, ResponseSink},
+    response_anchor::{
+        ArmedAnchorHandle, ResponseAnchorHandle, ResponseAnchorSource, ResponseSink,
+        SerializedAnchorHandle,
+    },
     status::{DetachedConfirm, MessageStatus, SendAndConfirm, WithResponse},
 };
 

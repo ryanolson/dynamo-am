@@ -116,7 +116,7 @@ pub enum StreamFrame<T> {
 
     /// Sentinel: Source detached, anchor can accept new attachment
     /// Only sent after all Item frames from this session
-    Detached,blluufincgnuruugrftf
+    Detached,
     
     /// Sentinel: Stream finalized, no more attachments allowed
     /// Anchor will close the stream after processing this
@@ -220,7 +220,7 @@ struct AttachmentSession {
 impl AnchorManager {
     /// Create a new response anchor
     pub async fn create_anchor<T>(&self, instance_id: InstanceId, worker_address: WorkerAddress)
-        -> Result<(ResponseAnchorHandle, impl Stream<Item = Result<T, anyhow::Error>>)>
+        -> Result<(ArmedAnchorHandle<T>, impl Stream<Item = Result<T, anyhow::Error>>)>
     where
         T: DeserializeOwned + Send + 'static;
 
@@ -285,45 +285,35 @@ pub trait StreamReceiver<T>: Send {
 User-facing types in `src/api/response_anchor.rs`:
 
 ```rust
-/// Handle to a response anchor (serializable)
-pub struct ResponseAnchorHandle {
-    pub anchor_id: Uuid,
-    pub instance_id: InstanceId,
-    pub worker_address: WorkerAddress,
+/// Serializable payload that can be sent across the wire
+pub struct SerializedAnchorHandle<T> { /* AnchorHandlePayload */ }
+
+impl<T> SerializedAnchorHandle<T> {
+    pub fn arm(self, client: Arc<NetworkClient>) -> ArmedAnchorHandle<T>;
 }
 
-/// Stream type returned to anchor creator
-pub type ResponseAnchorStream<T> = impl Stream<Item = Result<T, anyhow::Error>>;
+/// RAII guard that owns exclusive attachment rights
+pub struct ArmedAnchorHandle<T> { /* lifecycle + client */ }
+
+impl<T> ArmedAnchorHandle<T> {
+    pub fn disarm(self) -> SerializedAnchorHandle<T>;
+    pub fn payload(&self) -> &AnchorHandlePayload;
+}
 
 /// Entry point for attaching to a remote anchor
-pub struct ResponseAnchorSource<T> {
-    // Internal fields hidden
-}
+pub struct ResponseAnchorSource<T>;
 
 impl<T: Serialize + Send + 'static> ResponseAnchorSource<T> {
-    /// Attach to a remote anchor
-    pub async fn attach(
-        handle: ResponseAnchorHandle,
-        client: Arc<dyn ActiveMessageClient>,
-    ) -> Result<ResponseSink<T>>;
+    pub async fn attach(handle: ArmedAnchorHandle<T>) -> Result<ResponseSink<T>>;
 }
 
 /// Active streaming connection
-pub struct ResponseSink<T> {
-    // Internal fields hidden
-}
+pub struct ResponseSink<T> { /* lifecycle + stream sink */ }
 
-impl<T: Serialize> ResponseSink<T> {
-    /// Send a successful data item
+impl<T: Serialize + Send + 'static> ResponseSink<T> {
     pub async fn send_ok(&mut self, item: T) -> Result<()>;
-
-    /// Send an application-level error message
     pub async fn send_err(&mut self, error: impl Into<String>) -> Result<()>;
-
-    /// Detach (release exclusive lock, keep stream open)
-    pub async fn detach(self) -> Result<()>;
-
-    /// Finalize (close stream permanently)
+    pub async fn detach(self) -> Result<ArmedAnchorHandle<T>>;
     pub async fn finalize(self) -> Result<()>;
 }
 ```
@@ -334,7 +324,7 @@ impl<T: Serialize> ResponseSink<T> {
 impl NetworkClient {
     /// Create a new response anchor
     pub async fn create_response_anchor<T>(&self)
-        -> Result<(ResponseAnchorHandle, ResponseAnchorStream<T>)>
+        -> Result<(ArmedAnchorHandle<T>, ResponseAnchorStream<T>)>
     where
         T: DeserializeOwned + Send + 'static
     {
@@ -490,12 +480,17 @@ let sink = ResponseAnchorSource::attach(handle, client).await;
 
 ## Timeouts & Cancellation
 
-- `ResponseAnchorStream::set_timeout(Duration)` registers an inactivity timeout.
-  If no attachment occurs before the deadline the `AnchorManager` finalizes the
-  anchor with a `Dropped` sentinel.
-- Successful attachments or calls to `ResponseSink::detach()` reset the timeout.
-- Attempting to arm or attach a handle after the timeout fires yields an
-  `AttachError::AnchorNotFound`, allowing callers to fail fast and abort their work.
+- `ResponseAnchorStream::set_timeout(Duration)` registers an inactivity timeout
+  for the anchor. While attached the timer is paused; once detached (or before
+  the first attachment) the deadline counts down.
+- If the deadline passes with no active attachment the `AnchorManager` removes
+  the anchor, the user stream completes, and subsequent attempts to arm/attach
+  the handle yield `AttachError::AnchorNotFound`.
+- Attached sessions emit `StreamFrame::Heartbeat` every five seconds when idle;
+  missing three consecutive heartbeats triggers a `StreamFrame::Dropped` and the
+  anchor is removed from the manager.
+- Explicit finalization still emits `StreamFrame::Finalized`; timeouts and dropped
+  handles emit `StreamFrame::Dropped`, enabling telemetry to distinguish the paths.
 
 ## Performance Considerations
 

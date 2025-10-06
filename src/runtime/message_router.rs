@@ -13,6 +13,7 @@
 //! - Better maintainability and modularity
 
 use anyhow::Result;
+use bytes::Bytes;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
@@ -20,6 +21,7 @@ use tracing::{debug, error, warn};
 use uuid::Uuid;
 
 use crate::api::{client::ActiveMessageClient, handler::ActiveMessage};
+use crate::protocols::response::ResponseEnvelope;
 use crate::protocols::{ControlMetadata, ResponseContextMetadata};
 use crate::runtime::{
     dispatcher::{DispatchMessage, SenderIdentity},
@@ -174,7 +176,8 @@ impl MessageRouter {
             match response_type {
                 ResponseType::Ack => {
                     debug!("Completing as ACK (from metadata)");
-                    self.response_manager.complete_ack(response_id, Ok(()));
+                    self.response_manager
+                        .complete_ack_if_present(response_id, Ok(()));
                     return Ok(());
                 }
                 ResponseType::Nack => {
@@ -197,8 +200,29 @@ impl MessageRouter {
                         }
                     });
                     debug!("Completing as NACK (from metadata): {}", error_msg);
+                    let error_for_response = error_msg.clone();
                     self.response_manager
-                        .complete_ack(response_id, Err(error_msg));
+                        .complete_ack_if_present(response_id, Err(error_msg));
+                    match serde_json::to_vec(&ResponseEnvelope::Err(error_for_response)) {
+                        Ok(bytes) => {
+                            if !self
+                                .response_manager
+                                .complete_response(response_id, Bytes::from(bytes))
+                            {
+                                debug!(
+                                    "No pending response receiver for NACK response {}",
+                                    response_id
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            warn!(
+                                response_id = %response_id,
+                                %error,
+                                "Failed to serialize ResponseEnvelope for NACK"
+                            );
+                        }
+                    }
                     return Ok(());
                 }
                 ResponseType::Response => {
@@ -206,6 +230,8 @@ impl MessageRouter {
                         "Completing as full response (from metadata) with {} bytes",
                         message.payload.len()
                     );
+                    self.response_manager
+                        .complete_ack_if_present(response_id, Ok(()));
                     self.response_manager
                         .complete_response(response_id, message.payload);
                     return Ok(());

@@ -51,10 +51,9 @@ async fn test_minimal_attach() -> Result<()> {
 
     // Create anchor on A
     println!("Creating anchor on A...");
-    let (handle, mut stream) = manager_a
-        .create_response_anchor::<TestData>(peer_a_info.address.clone())
-        .await?;
-    println!("Anchor created: {}", handle.anchor_id);
+    let (handle, mut stream) = manager_a.create_local_response_anchor::<TestData>().await?;
+    let serialized = handle.disarm();
+    println!("Anchor created: {}", serialized.payload().anchor_id);
 
     // Wait a bit to ensure handler is registered
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -63,7 +62,7 @@ async fn test_minimal_attach() -> Result<()> {
     println!("B attempting to attach...");
     let mut sink = tokio::time::timeout(
         Duration::from_secs(5),
-        ResponseAnchorSource::<TestData>::attach(handle.clone(), client_b.clone()),
+        ResponseAnchorSource::<TestData>::attach(serialized.arm(client_b.clone())),
     )
     .await
     .expect("Attach timed out")

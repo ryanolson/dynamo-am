@@ -127,7 +127,6 @@ pub trait StreamReceiver<T>: Send {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     // StreamingTransport is not dyn-compatible due to generic methods
     // This is intentional - we use Arc<ConcreteType> instead of Box<dyn Trait>
