@@ -22,7 +22,7 @@ use dynamo_am::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, task::yield_now, time};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -472,11 +472,8 @@ async fn test_simple_attach_send() -> Result<()> {
     Ok(())
 }
 
-// Note: Timeout tests require tokio test-util feature, which is not enabled.
-// These tests are commented out until the feature is added to Cargo.toml.
-/*
 /// Anchors should time out when no attachment occurs before the deadline
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_anchor_timeout_without_attach() -> Result<()> {
     let cancel_token = CancellationToken::new();
     let manager =
@@ -487,24 +484,30 @@ async fn test_anchor_timeout_without_attach() -> Result<()> {
         .create_response_anchor::<TestData>(worker_address)
         .await?;
 
-    stream.set_timeout(Duration::from_secs(3));
+    stream.set_timeout(Duration::from_secs(1));
 
-    yield_now().await;
-    time::advance(Duration::from_secs(4)).await;
-    yield_now().await;
+    time::sleep(Duration::from_secs(2)).await;
 
     let result = stream.recv().await.expect("timeout event");
     assert!(result.is_err(), "expected timeout error");
 
+    drop(stream);
     manager.shutdown().await?;
     Ok(())
 }
-*/
-
-/*
 /// If heartbeats stop while attached, the anchor should time out
-#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_attached_anchor_times_out_without_heartbeat() -> Result<()> {
+    use dynamo_am::runtime::anchor_manager::set_attached_heartbeat_timeout_for_tests;
+
+    let previous = set_attached_heartbeat_timeout_for_tests(Duration::from_secs(1));
+    struct Restore(Duration);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = set_attached_heartbeat_timeout_for_tests(self.0);
+        }
+    }
+    let _restore = Restore(previous);
     let cancel_token = CancellationToken::new();
 
     let manager_a =
@@ -526,24 +529,23 @@ async fn test_attached_anchor_times_out_without_heartbeat() -> Result<()> {
     let (handle, mut stream) = manager_a.create_local_response_anchor::<TestData>().await?;
 
     let serialized = handle.disarm();
-    let mut sink =
+    let sink =
         ResponseAnchorSource::<TestData>::attach(serialized.arm(client_b.clone())).await?;
 
     // stop heartbeats to simulate an unresponsive source
     sink.abort_heartbeat_for_test();
 
-    yield_now().await;
-    time::advance(Duration::from_secs(16)).await;
-    yield_now().await;
+    time::sleep(Duration::from_secs(2)).await;
 
     let result = stream.recv().await.expect("heartbeat timeout event");
     assert!(result.is_err(), "expected heartbeat timeout error");
 
+    drop(stream);
+    drop(sink);
     manager_a.shutdown().await?;
     manager_b.shutdown().await?;
     Ok(())
 }
-*/
 
 /// Dropping a sink without explicit detach/finalize should release the anchor.
 #[tokio::test(flavor = "multi_thread")]

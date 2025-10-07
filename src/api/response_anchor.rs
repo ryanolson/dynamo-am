@@ -372,9 +372,9 @@ impl<T: Serialize + Send + 'static> ResponseSink<T> {
         }
     }
 
-    #[cfg(test)]
     #[allow(dead_code)]
-    pub(crate) fn abort_heartbeat_for_test(&self) {
+    #[cfg_attr(not(test), doc(hidden))]
+    pub fn abort_heartbeat_for_test(&self) {
         self.stop_heartbeat();
     }
 

@@ -15,7 +15,7 @@ use dashmap::DashMap;
 use serde::{Serialize, de::DeserializeOwned};
 use std::any::{Any, type_name};
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
+use std::sync::{atomic::{AtomicU64, Ordering as AtomicOrdering}, Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
@@ -89,7 +89,23 @@ struct AttachmentSession {
 }
 
 const STREAM_CHANNEL_CAPACITY: usize = 128;
-const ATTACHED_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_ATTACHED_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
+static ATTACHED_HEARTBEAT_TIMEOUT_NANOS: AtomicU64 =
+    AtomicU64::new(DEFAULT_ATTACHED_HEARTBEAT_TIMEOUT.as_nanos() as u64);
+
+fn attached_heartbeat_timeout() -> Duration {
+    Duration::from_nanos(ATTACHED_HEARTBEAT_TIMEOUT_NANOS.load(AtomicOrdering::Relaxed))
+}
+
+#[allow(dead_code)]
+#[cfg_attr(not(test), doc(hidden))]
+pub fn set_attached_heartbeat_timeout_for_tests(duration: Duration) -> Duration {
+    let previous = ATTACHED_HEARTBEAT_TIMEOUT_NANOS.swap(
+        duration.as_nanos().min(u64::MAX as u128) as u64,
+        AtomicOrdering::SeqCst,
+    );
+    Duration::from_nanos(previous)
+}
 
 enum AnchorStreamEvent {
     Item(Result<Box<dyn Any + Send>, String>),
@@ -299,7 +315,7 @@ impl AnchorManager {
                     );
                     inner.anchors.remove(&anchor_id);
                 } else if let Some(mut entry) = inner.anchors.get_mut(&anchor_id) {
-                    entry.attached_deadline = Some(Instant::now() + ATTACHED_HEARTBEAT_TIMEOUT);
+                    entry.attached_deadline = Some(Instant::now() + attached_heartbeat_timeout());
                     entry.deadline = None;
                 }
 
@@ -328,7 +344,7 @@ impl AnchorManager {
             StreamFrame::Heartbeat => {
                 drop(entry);
                 if let Some(mut entry) = inner.anchors.get_mut(&anchor_id) {
-                    entry.attached_deadline = Some(Instant::now() + ATTACHED_HEARTBEAT_TIMEOUT);
+                    entry.attached_deadline = Some(Instant::now() + attached_heartbeat_timeout());
                     entry.deadline = None;
                 }
                 AnchorManagerInner::ensure_timeout_worker(inner);
@@ -431,7 +447,7 @@ impl AnchorManager {
         entry.attachment = Some(session);
         entry.last_session_id = Some(request.session_id);
         entry.deadline = None;
-        entry.attached_deadline = Some(Instant::now() + ATTACHED_HEARTBEAT_TIMEOUT);
+        entry.attached_deadline = Some(Instant::now() + attached_heartbeat_timeout());
 
         debug!(
             anchor_id = %anchor_id,
@@ -840,7 +856,7 @@ impl<T> Drop for ResponseAnchorStream<T> {
         } else {
             std::thread::spawn(move || match Runtime::new() {
                 Ok(rt) => {
-                    let _ = rt.block_on(async {
+                    rt.block_on(async {
                         AnchorManagerInner::handle_stream_drop(inner, anchor_id).await;
                     });
                 }
