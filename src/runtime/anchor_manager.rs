@@ -15,7 +15,10 @@ use dashmap::DashMap;
 use serde::{Serialize, de::DeserializeOwned};
 use std::any::{Any, type_name};
 use std::marker::PhantomData;
-use std::sync::{atomic::{AtomicU64, Ordering as AtomicOrdering}, Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering as AtomicOrdering},
+};
 use std::time::{Duration, Instant};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
