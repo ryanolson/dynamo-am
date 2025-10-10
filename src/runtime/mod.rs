@@ -1,3 +1,4 @@
+pub mod anchor_manager;
 pub mod cohort;
 pub mod dispatcher;
 pub mod handler_impls;
@@ -7,6 +8,7 @@ pub mod network_client;
 pub mod response_manager;
 pub mod system_handlers;
 
+pub use anchor_manager::{AnchorManager, AnchorStats, ResponseAnchorStream};
 pub use cohort::{
     CohortFailurePolicy, CohortType, LeaderWorkerCohort, LeaderWorkerCohortConfig,
     LeaderWorkerCohortConfigBuilder, WorkerInfo,

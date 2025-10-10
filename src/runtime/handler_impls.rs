@@ -259,7 +259,7 @@ where
         // Process with typed handler
         let output: O = self.handler.process(input, sender_id, client).await?;
 
-        // Automatically serialize output - no wrapper needed!
+        // Serialize output directly; even unit types should return a response payload
         let response_bytes = serde_json::to_vec(&output)
             .map_err(|e| format!("Failed to serialize output: {}", e))?;
 
@@ -645,7 +645,7 @@ where
     I: serde::de::DeserializeOwned + Send + Sync + 'static,
     O: serde::Serialize + Send + Sync + 'static,
     F: Fn(TypedContext<I>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<O, String>> + Send + Sync + 'static,
+    Fut: Future<Output = Result<O, String>> + Send + 'static,
 {
     let task_tracker = tokio_util::task::TaskTracker::new();
     typed_unary_handler_async_with_tracker(name, f, task_tracker)
@@ -667,21 +667,21 @@ where
     I: serde::de::DeserializeOwned + Send + Sync + 'static,
     O: serde::Serialize + Send + Sync + 'static,
     F: Fn(TypedContext<I>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<O, String>> + Send + Sync + 'static,
+    Fut: Future<Output = Result<O, String>> + Send + 'static,
 {
-    struct AsyncTypedUnaryHandler<I, O, F, Fut> {
+    struct AsyncTypedUnaryHandler<I, O, F> {
         f: F,
         name: String,
-        _phantom: PhantomData<(I, O, Fut)>,
+        _phantom: PhantomData<(I, O)>,
     }
 
     #[async_trait]
-    impl<I, O, F, Fut> TypedUnaryHandler<I, O> for AsyncTypedUnaryHandler<I, O, F, Fut>
+    impl<I, O, F, Fut> TypedUnaryHandler<I, O> for AsyncTypedUnaryHandler<I, O, F>
     where
         I: serde::de::DeserializeOwned + Send + Sync,
         O: serde::Serialize + Send + Sync,
         F: Fn(TypedContext<I>) -> Fut + Send + Sync,
-        Fut: Future<Output = Result<O, String>> + Send + Sync + 'static,
+        Fut: Future<Output = Result<O, String>> + Send + 'static,
     {
         async fn process(
             &self,

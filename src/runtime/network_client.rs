@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{RwLock, oneshot};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -47,8 +48,14 @@ pub struct NetworkClient {
     /// Connection handles for each peer (InstanceId -> ConnectionHandle)
     connections: Arc<DashMap<InstanceId, BoxedConnectionHandle>>,
 
+    /// Active source sessions keyed by cancellation ID (for upstream cancellation propagation)
+    source_cancellations: Arc<DashMap<Uuid, Arc<CancellationToken>>>,
+
     /// The underlying transport implementation (type-erased)
     transport: Arc<BoxedTransport>,
+
+    /// Streaming transport for response anchors
+    streaming_transport: Arc<crate::zmq::streaming_transport::ZmqStreamingTransport>,
 
     /// Response manager for correlating responses, ACKs, and receipts
     response_manager: SharedResponseManager,
@@ -70,6 +77,7 @@ impl NetworkClient {
         instance_id: InstanceId,
         endpoint: Endpoint,
         transport: BoxedTransport,
+        streaming_transport: Arc<crate::zmq::streaming_transport::ZmqStreamingTransport>,
         response_manager: SharedResponseManager,
     ) -> Self {
         let state = NetworkClientState {
@@ -82,24 +90,47 @@ impl NetworkClient {
             endpoint,
             state: Arc::new(RwLock::new(state)),
             connections: Arc::new(DashMap::new()),
+            source_cancellations: Arc::new(DashMap::new()),
             transport: Arc::new(transport),
+            streaming_transport,
             response_manager,
         }
     }
 
+    /// Get the streaming transport for creating response anchor streams
+    pub fn streaming_transport(
+        &self,
+    ) -> &Arc<crate::zmq::streaming_transport::ZmqStreamingTransport> {
+        &self.streaming_transport
+    }
+
     /// Fast send path using pre-established connection handle
     async fn send_via_connection(&self, target: InstanceId, message: &ActiveMessage) -> Result<()> {
-        // Fast path: lookup connection handle
+        if self.connections.get(&target).is_none() {
+            if target == self.instance_id {
+                // Establish loopback connection lazily if needed.
+                self.connect_to_peer(self.peer_info()).await?;
+            } else {
+                // Attempt to reconnect using any cached peer info.
+                let peer_info = {
+                    let state = self.state.read().await;
+                    state.peers.get(&target).cloned()
+                };
+
+                if let Some(peer) = peer_info {
+                    self.connect_to_peer(peer).await?;
+                }
+            }
+        }
+
         let conn_handle = self
             .connections
             .get(&target)
             .ok_or_else(|| anyhow::anyhow!("No connection to peer: {}", target))?;
 
-        // Get the sender - we don't need to clone the whole handle
         let sender = conn_handle.sender().clone();
         drop(conn_handle);
 
-        // Serialize on caller's thread and send
         self.transport.serialize_and_send(message, &sender)?;
 
         Ok(())
@@ -128,7 +159,32 @@ impl NetworkClient {
         }
 
         self.connections.clear();
+        for entry in self.source_cancellations.iter() {
+            entry.value().cancel();
+        }
+        self.source_cancellations.clear();
         debug!("All connections shut down");
+    }
+
+    pub fn register_source_cancellation(
+        &self,
+        cancellation_id: Uuid,
+        token: Arc<CancellationToken>,
+    ) {
+        self.source_cancellations.insert(cancellation_id, token);
+    }
+
+    pub fn deregister_source_cancellation(&self, cancellation_id: Uuid) {
+        self.source_cancellations.remove(&cancellation_id);
+    }
+
+    pub fn cancel_source_session(&self, cancellation_id: Uuid) -> bool {
+        if let Some((_, token)) = self.source_cancellations.remove(&cancellation_id) {
+            token.cancel();
+            true
+        } else {
+            false
+        }
     }
 }
 

@@ -13,6 +13,7 @@
 //! - Can be implemented for any underlying transport (ZMQ, TCP, HTTP, etc.)
 
 pub mod boxed;
+pub mod streaming;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -160,3 +161,6 @@ impl<WireFormat: Send + 'static> ConnectionHandle<WireFormat> {
         anyhow::bail!("All senders failed for instance {}", self.instance_id)
     }
 }
+
+// Re-export streaming types
+pub use streaming::{StreamReceiver, StreamSink, StreamingTransport};

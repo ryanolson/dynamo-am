@@ -85,12 +85,21 @@ impl ResponseManager {
 
     /// Complete a pending acknowledgment
     pub fn complete_ack(&self, message_id: Uuid, result: Result<(), String>) -> bool {
+        if self.complete_ack_if_present(message_id, result) {
+            true
+        } else {
+            warn!(message_id = %message_id, "No pending ACK found for message");
+            false
+        }
+    }
+
+    /// Complete a pending acknowledgment without warning if it does not exist
+    pub fn complete_ack_if_present(&self, message_id: Uuid, result: Result<(), String>) -> bool {
         if let Some((_, entry)) = self.pending_acks.remove(&message_id) {
             let _ = entry.sender.send(result);
             debug!(message_id = %message_id, "Completed pending ACK");
             true
         } else {
-            warn!(message_id = %message_id, "No pending ACK found for message");
             false
         }
     }

@@ -83,7 +83,6 @@ async fn test_ack_response_with_confirmed_mode() -> Result<()> {
 /// Verifies that NACK responses include error_message in metadata (zero JSON parse).
 /// TODO: Debug why this test times out
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Debugging timeout issue"]
 async fn test_nack_response_on_handler_error() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())

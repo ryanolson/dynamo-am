@@ -119,7 +119,6 @@ async fn test_await_handler_succeeds_when_handler_exists() -> Result<()> {
 /// Test that await_handler times out when handler doesn't exist
 /// TODO: This test has a deadlock issue in parallel execution - tokio::select! not responding to cancellation
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Deadlock in parallel execution - needs investigation"]
 async fn test_await_handler_times_out_when_handler_missing() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -140,24 +139,16 @@ async fn test_await_handler_times_out_when_handler_missing() -> Result<()> {
     // Connect client1 to client2
     client1.connect_to_peer(peer2_info.clone()).await?;
 
-    // Wait for a handler that doesn't exist (short timeout)
-    let result = client1
+    // Wait for a handler that doesn't exist (allow enough time for a negative response)
+    let available = client1
         .await_handler(
             peer2_info.instance_id,
             "nonexistent_handler",
-            Some(Duration::from_millis(500)),
+            Some(Duration::from_secs(2)),
         )
-        .await;
+        .await?;
 
-    match result {
-        Ok(available) => {
-            assert!(!available, "Handler should not be available after timeout");
-        }
-        Err(e) => {
-            // It's also acceptable if the call returns an error due to timeout
-            eprintln!("await_handler returned error (acceptable): {}", e);
-        }
-    }
+    assert!(!available, "Handler should not be available after timeout");
 
     manager1.shutdown().await?;
     manager2.shutdown().await?;
